@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"sync"
 	"syscall"
 	"time"
 
@@ -95,7 +96,28 @@ func currentUmask() uint32 {
 	return uint32(m)
 }
 
-func isRoot() bool { return os.Geteuid() == 0 }
+var isRoot = sync.OnceValue(func() bool { return os.Geteuid() == 0 })
+
+// openFast opens a regular file for reading like os.Open, but without
+// registering it with the runtime poller, which fails for regular files
+// on Linux and costs several system calls per file.
+func openFast(name string) (*os.File, error) {
+	return openatFast(unix.AT_FDCWD, name, os.O_RDONLY, 0)
+}
+
+// openatFast is openFast relative to the directory dirfd.
+func openatFast(dirfd int, name string, flag int, perm os.FileMode) (*os.File, error) {
+	for {
+		fd, err := unix.Openat(dirfd, name, flag|unix.O_CLOEXEC, uint32(perm.Perm()))
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return nil, &fs.PathError{Op: "open", Path: name, Err: err}
+		}
+		return os.NewFile(uintptr(fd), name), nil
+	}
+}
 
 // withParent opens the directory containing name inside root and calls fn
 // with its descriptor and name's base name. It lets us use *at system
@@ -161,4 +183,10 @@ func checkInRoot(root *dtree, name string) error {
 		return &fs.PathError{Op: "mknod", Path: name, Err: syscall.ENOTDIR}
 	}
 	return withParent(root, name, func(int, string) error { return nil })
+}
+
+// renameat renames old to new within the directory open as dirfd. Both
+// are single path components.
+func renameat(dirfd int, old, new string) error {
+	return unix.Renameat(dirfd, old, dirfd, new)
 }

@@ -683,7 +683,7 @@ func (rv *receiving) genSymlink(ndx int32, f *flist.File, name string, fi fs.Fil
 		}
 		s.stats.NumCreated++
 		if o.Owner || o.Group {
-			rv.chown(name, f, nil, true)
+			rv.chown(nil, name, f, nil, true)
 		}
 		rv.setLinkTime(name, f, nil)
 	}
@@ -756,12 +756,18 @@ func (rv *receiving) newPerm(f *flist.File) fs.FileMode {
 // setAttrs brings the permissions, ownership and modification time of an
 // existing entry in line with f. isNew is set for entries just created.
 func (rv *receiving) setAttrs(name string, f *flist.File, fi fs.FileInfo, isNew bool) {
+	rv.setAttrsOf(nil, name, f, fi, isNew)
+}
+
+// setAttrsOf is setAttrs for a file that may be open as fh, in which case
+// the attributes are set through its descriptor.
+func (rv *receiving) setAttrsOf(fh *os.File, name string, f *flist.File, fi fs.FileInfo, isNew bool) {
 	o := rv.o
 	if rv.root == nil || o.DryRun {
 		return
 	}
 	if o.Owner || o.Group {
-		rv.chown(name, f, fi, false)
+		rv.chown(fh, name, f, fi, false)
 	}
 	cur := wireMode(fi.Mode()) & 0o7777
 	want := cur
@@ -785,15 +791,21 @@ func (rv *receiving) setAttrs(name string, f *flist.File, fi fs.FileInfo, isNew 
 		}
 	}
 	if want != cur {
-		rv.root.Chmod(name, goMode(want))
+		if fh != nil {
+			fh.Chmod(goMode(want))
+		} else {
+			rv.root.Chmod(name, goMode(want))
+		}
 	}
 	if o.Times && !f.IsDir() && !sameTime(fi.ModTime(), f, -1) {
 		mt := time.Unix(f.ModTime, int64(f.ModNsec))
-		rv.root.Chtimes(name, mt, mt)
+		if fh == nil || futimes(fh, mt) != nil {
+			rv.root.Chtimes(name, mt, mt)
+		}
 	}
 }
 
-func (rv *receiving) chown(name string, f *flist.File, fi fs.FileInfo, link bool) {
+func (rv *receiving) chown(fh *os.File, name string, f *flist.File, fi fs.FileInfo, link bool) {
 	uid, gid := -1, -1
 	var sys sysInfo
 	if fi != nil {
@@ -812,7 +824,12 @@ func (rv *receiving) chown(name string, f *flist.File, fi fs.FileInfo, link bool
 	if uid == -1 && gid == -1 {
 		return
 	}
-	rv.root.Lchown(name, uid, gid) // failures are expected for groups we are not in
+	// Failures are expected for groups we are not in.
+	if fh != nil {
+		fh.Chown(uid, gid)
+	} else {
+		rv.root.Lchown(name, uid, gid)
+	}
 }
 
 // deleteForReplace removes an entry that is in the way of a different type.
@@ -1184,7 +1201,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, tr token.Reader, fi
 	// Finish: attributes, then rename into place.
 	fi, err := tmp.Stat()
 	if err == nil {
-		rv.setAttrs(tmpName, f, fi, true)
+		rv.setAttrsOf(tmp, tmpName, f, fi, true)
 	}
 	tmp.Close()
 	tmp = nil

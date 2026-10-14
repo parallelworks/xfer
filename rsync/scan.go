@@ -248,7 +248,7 @@ func (sc *scanner) walk(p, dir string, top bool) {
 		defer leave()
 	}
 
-	d, err := os.Open(p)
+	d, err := openFast(p)
 	if err != nil {
 		sc.ioError(ioErrGeneral, "opendir %q failed: %v", p, errnoText(err))
 		return
@@ -343,7 +343,7 @@ func fileChecksum(p string, alg checksum.Algorithm) ([]byte, error) {
 	if alg == checksum.MD4Old {
 		alg = checksum.MD4 // file-list sums are never seeded
 	}
-	file, err := os.Open(p)
+	file, err := openFast(p)
 	if err != nil {
 		return make([]byte, alg.Size()), err
 	}

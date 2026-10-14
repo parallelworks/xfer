@@ -4,6 +4,8 @@
 package rsync
 
 import (
+	"errors"
+	"golang.org/x/sys/unix"
 	"io/fs"
 	"os"
 	"path"
@@ -22,6 +24,7 @@ type dtree struct {
 
 	mu   sync.Mutex
 	dirs map[string]*dirEnt
+	top  dirEnt // the root directory itself
 	tick uint64
 }
 
@@ -31,22 +34,32 @@ const dirCacheSize = 16
 
 type dirEnt struct {
 	r       *os.Root
+	f       *os.File // the directory itself, opened on first use
 	refs    int
 	used    uint64
 	evicted bool
 }
 
 func newDtree(root *os.Root) *dtree {
-	return &dtree{root: root, dirs: make(map[string]*dirEnt)}
+	return &dtree{root: root, dirs: make(map[string]*dirEnt), top: dirEnt{r: root}}
 }
 
 // at returns the root to resolve name's base name in, and a release
 // function to call when done with it.
 func (t *dtree) at(name string) (*os.Root, string, func()) {
+	e, base, done := t.entry(name)
+	return e.r, base, done
+}
+
+// entry is at, returning the cache entry.
+func (t *dtree) entry(name string) (*dirEnt, string, func()) {
 	dir, base := path.Split(name)
 	dir = strings.TrimSuffix(dir, "/")
-	if dir == "" || dir == "." || base == "" || base == "." || base == ".." {
-		return t.root, name, func() {}
+	if base == "" || base == "." || base == ".." {
+		return &dirEnt{r: t.root}, name, func() {}
+	}
+	if dir == "" || dir == "." {
+		return &t.top, base, func() {}
 	}
 	t.mu.Lock()
 	e := t.dirs[dir]
@@ -54,7 +67,7 @@ func (t *dtree) at(name string) (*os.Root, string, func()) {
 		t.mu.Unlock()
 		r, err := t.root.OpenRoot(dir)
 		if err != nil {
-			return t.root, name, func() {} // let the operation report the error
+			return &dirEnt{r: t.root}, name, func() {} // let the operation report the error
 		}
 		t.mu.Lock()
 		if e = t.dirs[dir]; e != nil {
@@ -69,13 +82,56 @@ func (t *dtree) at(name string) (*os.Root, string, func()) {
 	e.refs++
 	t.evictLocked()
 	t.mu.Unlock()
-	return e.r, base, func() {
+	return e, base, func() {
 		t.mu.Lock()
 		e.refs--
 		if e.refs == 0 && e.evicted {
-			e.r.Close()
+			e.close()
 		}
 		t.mu.Unlock()
+	}
+}
+
+// dirFD runs fn with a descriptor for the directory holding name and
+// name's base name, which fn may use with *at system calls.
+func (t *dtree) dirFD(name string, fn func(fd int, base string) error) error {
+	e, base, done := t.entry(name)
+	defer done()
+	if strings.Contains(base, "/") || base == "" || base == "." || base == ".." {
+		return errors.ErrUnsupported // not resolved through a cached directory
+	}
+	t.mu.Lock()
+	f := e.f
+	t.mu.Unlock()
+	if f == nil {
+		nf, err := e.r.Open(".")
+		if err != nil {
+			return err
+		}
+		t.mu.Lock()
+		if e.f == nil {
+			e.f = nf
+		} else {
+			nf.Close()
+		}
+		f = e.f
+		t.mu.Unlock()
+	}
+	sc, err := f.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var ferr error
+	if err := sc.Control(func(fd uintptr) { ferr = fn(int(fd), base) }); err != nil {
+		return err
+	}
+	return ferr
+}
+
+func (e *dirEnt) close() {
+	e.r.Close()
+	if e.f != nil {
+		e.f.Close()
 	}
 }
 
@@ -97,7 +153,7 @@ func (t *dtree) dropLocked(k string) {
 	delete(t.dirs, k)
 	e.evicted = true
 	if e.refs == 0 {
-		e.r.Close()
+		e.close()
 	}
 }
 
@@ -117,6 +173,9 @@ func (t *dtree) forget(name string) {
 // Close closes the tree and every cached directory.
 func (t *dtree) Close() error {
 	t.forget(".")
+	if t.top.f != nil {
+		t.top.f.Close()
+	}
 	return t.root.Close()
 }
 
@@ -136,12 +195,25 @@ func (t *dtree) Stat(name string) (fs.FileInfo, error) {
 }
 
 func (t *dtree) Open(name string) (*os.File, error) {
-	r, base, done := t.at(name)
-	defer done()
-	return r.Open(base)
+	return t.OpenFile(name, os.O_RDONLY, 0)
 }
 
+// OpenFile opens name without following a final symlink, through the
+// cached directory when it can; a symlink is then opened through os.Root,
+// which keeps it inside the tree.
 func (t *dtree) OpenFile(name string, flag int, perm fs.FileMode) (*os.File, error) {
+	var f *os.File
+	err := t.dirFD(name, func(fd int, base string) error {
+		var err error
+		f, err = openatFast(fd, base, flag|unix.O_NOFOLLOW, perm)
+		return err
+	})
+	if err == nil {
+		return f, nil
+	}
+	if !errors.Is(err, errors.ErrUnsupported) && !errors.Is(err, unix.ELOOP) {
+		return nil, err
+	}
 	r, base, done := t.at(name)
 	defer done()
 	return r.OpenFile(base, flag, perm)
@@ -204,11 +276,16 @@ func (t *dtree) RemoveAll(name string) error {
 func (t *dtree) Rename(oldname, newname string) error {
 	t.forget(oldname)
 	t.forget(newname)
-	if od, nd := path.Dir(oldname), path.Dir(newname); od == nd {
-		r, base, done := t.at(newname)
-		defer done()
-		if r != t.root {
-			return r.Rename(path.Base(oldname), base)
+	if path.Dir(oldname) == path.Dir(newname) {
+		ob := path.Base(oldname)
+		err := t.dirFD(newname, func(fd int, base string) error {
+			return renameat(fd, ob, base)
+		})
+		if !errors.Is(err, errors.ErrUnsupported) {
+			if err != nil {
+				return &os.LinkError{Op: "rename", Old: oldname, New: newname, Err: err}
+			}
+			return nil
 		}
 	}
 	return t.root.Rename(oldname, newname)

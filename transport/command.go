@@ -143,6 +143,11 @@ func startCmd(ctx context.Context, cmd *exec.Cmd) (Conn, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+	for _, p := range []any{stdin, stdout} {
+		if f, ok := p.(*os.File); ok {
+			GrowPipe(f)
+		}
+	}
 	c := &cmdConn{cmd: cmd, stdin: stdin, stdout: stdout, done: make(chan struct{})}
 	go func() {
 		select {

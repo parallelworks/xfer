@@ -265,7 +265,7 @@ func (s *session) readSums(h sumHead) (*delta.Sums, error) {
 // sendFile transmits one file as a delta against the receiver's sums.
 func (s *session) sendFile(f *flist.File, req request, head sumHead, sums *delta.Sums,
 	block *checksum.Block, fileHash hash.Hash, tw token.Writer) error {
-	file, err := os.Open(f.Source)
+	file, err := openFast(f.Source)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			s.ioError |= ioErrVanished

@@ -374,6 +374,8 @@ func startLocalServer(ctx context.Context, o *Options, push bool, paths []string
 		c2sW.Close()
 		return nil, nil, err
 	}
+	transport.GrowPipe(c2sR)
+	transport.GrowPipe(s2cR)
 	done := make(chan error, 1)
 	go func() {
 		err := serve(ctx, args, &pipeConn{r: c2sR, w: s2cW}, stderr, true)
@@ -442,6 +444,11 @@ func Main(ctx context.Context, args []string, stdio Stdio) int {
 		return ExitSyntax
 	}
 	if o.Server {
+		for _, s := range []any{stdio.Stdin, stdio.Stdout} {
+			if f, ok := s.(*os.File); ok {
+				transport.GrowPipe(f)
+			}
+		}
 		err := Serve(ctx, args, stdioConn{stdio.Stdin, stdio.Stdout}, stdio.Stderr)
 		if err != nil && !bytes.Contains([]byte(err.Error()), []byte("remote side exited")) {
 			fmt.Fprintf(stdio.Stderr, "rsync: %v\n", err)
