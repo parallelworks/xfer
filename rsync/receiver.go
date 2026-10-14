@@ -46,19 +46,27 @@ type receiving struct {
 
 	events chan recvEvent // receiver → generator
 
+	// With incremental recursion: directories this side created before
+	// their own list arrived, which are still reported as new.
+	precreated map[string]bool
+
 	mu        sync.Mutex
-	sent      map[int32]bool // files the receiver has seen once (for redo)
-	deleted   [5]int32       // files, dirs, symlinks, devices, specials
+	sent      map[int32]bool  // files the receiver has seen once (for redo)
+	names     map[[2]any]bool // sender id names already mapped
+	deleted   [5]int32        // files, dirs, symlinks, devices, specials
 	deletes   int
 	delLimit  bool
 	followers []int // hard-link followers to link after transfers
 }
 
 // recvEvent is the receiver telling the generator something: a file to
-// redo, or that it finished a phase.
+// redo, that it finished a phase, or (with incremental recursion) that a
+// transfer the generator requested is over.
 type recvEvent struct {
 	redo int32
 	ack  bool
+	done bool
+	list *fileList // the list of the file redone or done
 }
 
 // receiveFiles runs the generator and the receiver until the transfer is
@@ -66,9 +74,11 @@ type recvEvent struct {
 func (s *session) receiveFiles(files []*flist.File, users, groups map[uint32]string, dest string, filters *filter.List) error {
 	rv := &receiving{
 		s: s, o: s.opts, files: files, filters: filters,
-		events: make(chan recvEvent, 1024),
-		sent:   map[int32]bool{},
-		umask:  currentUmask(),
+		events:     make(chan recvEvent, 1024),
+		sent:       map[int32]bool{},
+		umask:      currentUmask(),
+		precreated: map[string]bool{},
+		names:      map[[2]any]bool{},
 	}
 	if !s.opts.ListOnly {
 		if err := rv.openDest(dest); err != nil {
@@ -78,16 +88,35 @@ func (s *session) receiveFiles(files []*flist.File, users, groups map[uint32]str
 	if rv.root != nil {
 		defer rv.root.Close()
 	}
-	rv.byName = make(map[string]int, len(files))
-	for i, f := range files {
-		if f.Flags&flist.FlagCleared == 0 {
-			rv.byName[f.Name] = i
+	if !s.inc {
+		rv.byName = make(map[string]int, len(files))
+		for i, f := range files {
+			if f.Flags&flist.FlagCleared == 0 {
+				rv.byName[f.Name] = i
+			}
 		}
 	}
-	rv.buildIDMaps(users, groups)
+	rv.uidMap, rv.gidMap = map[uint32]uint32{}, map[uint32]uint32{}
+	rv.mapIDs(users, groups)
+	if s.inc {
+		// Names arrive inline with the lists; the receiver goroutine
+		// decodes them.
+		s.onSubList = func(*fileList) { rv.mapIDs(s.dec.Users, s.dec.Groups) }
+		s.onNoSend = func(ndx int32) {
+			if _, l, err := s.lists.lookup(ndx); err == nil {
+				rv.events <- recvEvent{done: true, list: l}
+			}
+		}
+	}
 
 	genErr := make(chan error, 1)
-	go func() { genErr <- rv.generate() }()
+	go func() {
+		if s.inc {
+			genErr <- rv.generateInc()
+		} else {
+			genErr <- rv.generate()
+		}
+	}()
 	recvErr := rv.receive()
 	if recvErr != nil {
 		close(rv.events)
@@ -185,32 +214,45 @@ func (rv *receiving) lstat(name string) (fs.FileInfo, error) {
 	return rv.root.Lstat(name)
 }
 
-// buildIDMaps maps the sender's ids to local ids by name, as rsync does
-// unless --numeric-ids is given.
-func (rv *receiving) buildIDMaps(users, groups map[uint32]string) {
-	rv.uidMap, rv.gidMap = map[uint32]uint32{}, map[uint32]uint32{}
+// mapIDs maps the sender's ids to local ids by name, as rsync does unless
+// --numeric-ids is given. With incremental recursion it is called again as
+// names arrive; ids already mapped are skipped.
+func (rv *receiving) mapIDs(users, groups map[uint32]string) {
 	if rv.o.NumericIDs {
 		return
 	}
-	if isRoot() {
-		for id, name := range users {
-			if u, err := user.Lookup(name); err == nil {
-				if n, err := strconv.ParseUint(u.Uid, 10, 32); err == nil {
-					rv.uidMap[id] = uint32(n)
-				}
+	root := isRoot()
+	for id, name := range users {
+		if !root || rv.names[[2]any{"u", id}] {
+			continue
+		}
+		rv.names[[2]any{"u", id}] = true
+		if u, err := user.Lookup(name); err == nil {
+			if n, err := strconv.ParseUint(u.Uid, 10, 32); err == nil {
+				rv.mu.Lock()
+				rv.uidMap[id] = uint32(n)
+				rv.mu.Unlock()
 			}
 		}
 	}
 	for id, name := range groups {
+		if rv.names[[2]any{"g", id}] {
+			continue
+		}
+		rv.names[[2]any{"g", id}] = true
 		if g, err := user.LookupGroup(name); err == nil {
 			if n, err := strconv.ParseUint(g.Gid, 10, 32); err == nil {
+				rv.mu.Lock()
 				rv.gidMap[id] = uint32(n)
+				rv.mu.Unlock()
 			}
 		}
 	}
 }
 
 func (rv *receiving) uid(f *flist.File) uint32 {
+	rv.mu.Lock()
+	defer rv.mu.Unlock()
 	if v, ok := rv.uidMap[f.UID]; ok {
 		return v
 	}
@@ -218,6 +260,8 @@ func (rv *receiving) uid(f *flist.File) uint32 {
 }
 
 func (rv *receiving) gid(f *flist.File) uint32 {
+	rv.mu.Lock()
+	defer rv.mu.Unlock()
 	if v, ok := rv.gidMap[f.GID]; ok {
 		return v
 	}
@@ -227,6 +271,26 @@ func (rv *receiving) gid(f *flist.File) uint32 {
 // generator ----------------------------------------------------------------
 
 func (rv *receiving) generate() error {
+	o := rv.o
+	if o.Delete != DeleteNone && rv.deleteMode() == DeleteBefore {
+		rv.deletePass()
+	}
+	for i, f := range rv.files {
+		if f.Flags&flist.FlagCleared != 0 {
+			continue
+		}
+		if _, err := rv.genFile(int32(i), f, false); err != nil {
+			return err
+		}
+	}
+	return rv.phases(true)
+}
+
+// phases runs the generator's part of the transfer phases after the file
+// lists were walked: the end of phase 0 (unless incremental recursion
+// already ended it with the NDX_DONE of its last list), the redo phase and
+// the goodbye.
+func (rv *receiving) phases(endPhase0 bool) error {
 	s, o := rv.s, rv.o
 	w := s.out
 	earlyDelay := !o.DelayUpdates
@@ -234,17 +298,6 @@ func (rv *receiving) generate() error {
 	mode := rv.deleteMode()
 	earlyDelete := !(mode == DeleteDelay || mode == DeleteAfter)
 
-	if deleting && mode == DeleteBefore {
-		rv.deletePass()
-	}
-	for i, f := range rv.files {
-		if f.Flags&flist.FlagCleared != 0 {
-			continue
-		}
-		if err := rv.genFile(int32(i), f, false); err != nil {
-			return err
-		}
-	}
 	done := func() error {
 		w.Lock()
 		w.W.Ndx(wire.NdxDone)
@@ -259,7 +312,14 @@ func (rv *receiving) generate() error {
 			if ev.ack {
 				return nil
 			}
-			if err := rv.genFile(ev.redo, rv.files[ev.redo], true); err != nil {
+			if ev.done {
+				continue
+			}
+			f, _, err := s.lists.lookup(ev.redo)
+			if err != nil {
+				return err
+			}
+			if _, err := rv.genFile(ev.redo, f, true); err != nil {
 				return err
 			}
 			w.Flush()
@@ -274,8 +334,10 @@ func (rv *receiving) generate() error {
 		}
 	}
 
-	if err := done(); err != nil { // end of phase 0
-		return err
+	if endPhase0 {
+		if err := done(); err != nil { // end of phase 0
+			return err
+		}
 	}
 	if err := waitAck(); err != nil { // receiver finished phase 0; redos sent
 		return err
@@ -345,13 +407,13 @@ func (rv *receiving) deleteMode() DeleteMode {
 // genFile decides what to do with one entry and, for a regular file that
 // needs updating, sends the request to the sender. redo is set in the
 // second pass, after a checksum mismatch.
-func (rv *receiving) genFile(ndx int32, f *flist.File, redo bool) error {
+func (rv *receiving) genFile(ndx int32, f *flist.File, redo bool) (requested bool, err error) {
 	s, o := rv.s, rv.o
 	if o.ListOnly {
 		if !(f.IsDir() && !o.ImpliedDirs && f.Flags&flist.FlagImpliedDir != 0) && !s.server {
 			s.log.print(listLine(f, o.HumanReadable))
 		}
-		return nil
+		return false, nil
 	}
 	name := rv.localName(f)
 	fi, statErr := rv.lstat(name)
@@ -359,36 +421,36 @@ func (rv *receiving) genFile(ndx int32, f *flist.File, redo bool) error {
 
 	switch {
 	case f.IsDir():
-		return rv.genDir(ndx, f, name, fi, exists)
+		return false, rv.genDir(ndx, f, name, fi, exists)
 	case f.IsLink():
-		return rv.genSymlink(ndx, f, name, fi, exists)
+		return false, rv.genSymlink(ndx, f, name, fi, exists)
 	case f.IsDevice(), f.IsSpecial():
-		return rv.genSpecial(ndx, f, name, fi, exists)
+		return false, rv.genSpecial(ndx, f, name, fi, exists)
 	}
 
 	// Regular file.
 	if o.HardLinks && f.Flags&flist.FlagHlinked != 0 && !rv.isHlinkLeader(ndx, f) {
 		rv.followers = append(rv.followers, int(ndx))
-		return nil
+		return false, nil
 	}
 	if !redo {
 		if o.Existing && !exists {
-			return nil
+			return false, nil
 		}
 		if o.IgnoreExisting && exists && !fi.IsDir() {
-			return nil
+			return false, nil
 		}
 		if (o.MaxSize > 0 && f.Size > o.MaxSize) || (o.MinSize > 0 && f.Size < o.MinSize) {
-			return nil
+			return false, nil
 		}
 		if o.Update && exists && fi.Mode().IsRegular() && fi.ModTime().Unix()-f.ModTime > int64(o.ModifyWindow/time.Second) {
-			return nil
+			return false, nil
 		}
 	}
 	if exists && !fi.Mode().IsRegular() {
 		if err := rv.deleteForReplace(name, fi); err != nil {
 			s.sendError("delete of %q failed: %s", name, errnoText(err))
-			return nil
+			return false, nil
 		}
 		exists = false
 	}
@@ -402,7 +464,7 @@ func (rv *receiving) genFile(ndx int32, f *flist.File, redo bool) error {
 			if o.RemoveSourceFiles {
 				s.out.SendMsgInt(wire.MsgSuccess, ndx)
 			}
-			return nil
+			return false, nil
 		}
 	}
 
@@ -440,7 +502,7 @@ func (rv *receiving) genFile(ndx int32, f *flist.File, redo bool) error {
 		s.writeSumHead(head)
 		w.W.Write(sums)
 	}
-	return w.W.Err()
+	return !o.DryRun, w.W.Err()
 }
 
 // wholeFile reports whether files are sent without the delta algorithm.
@@ -612,6 +674,17 @@ func (rv *receiving) itemize(ndx int32, f *flist.File, iflags uint32) {
 
 func (rv *receiving) genDir(ndx int32, f *flist.File, name string, fi fs.FileInfo, exists bool) error {
 	s, o := rv.s, rv.o
+	if rv.precreated[name] {
+		// Made early so its parent's time could be set; still new.
+		delete(rv.precreated, name)
+		if exists && fi.IsDir() {
+			if !o.DryRun && rv.root != nil {
+				rv.setAttrs(name, f, fi, true)
+			}
+			rv.itemize(ndx, f, itemLocalChange|itemIsNew)
+			return nil
+		}
+	}
 	if exists && !fi.IsDir() {
 		if err := rv.deleteForReplace(name, fi); err != nil {
 			s.sendError("delete of %q failed: %s", name, errnoText(err))
@@ -638,10 +711,16 @@ func (rv *receiving) genDir(ndx int32, f *flist.File, name string, fi fs.FileInf
 		}
 	}
 	rv.itemize(ndx, f, iflags)
-	if o.Delete != DeleteNone && rv.deleteMode() == DeleteDuring && f.Flags&flist.FlagContentDir != 0 {
-		rv.deleteInDir(name, f.Name)
+	if !s.inc && o.Delete != DeleteNone && rv.deleteMode() == DeleteDuring && f.Flags&flist.FlagContentDir != 0 {
+		rv.deleteInDir(name, f.Name, rv.inList)
 	}
 	return nil
+}
+
+// inList reports whether a wire name is in the (single) file list.
+func (rv *receiving) inList(name string) bool {
+	_, ok := rv.byName[name]
+	return ok
 }
 
 func (rv *receiving) genSymlink(ndx int32, f *flist.File, name string, fi fs.FileInfo, exists bool) error {
@@ -878,7 +957,7 @@ func (rv *receiving) linkFollowers() {
 		f := rv.files[i]
 		var leader *flist.File
 		if rv.s.proto >= 30 {
-			leader = rv.s.recvOrder[f.HLinkIndex]
+			leader = rv.s.dec.Leader(f.HLinkIndex)
 		} else {
 			leader = leaderOf[[2]int64{f.Dev, f.Ino}]
 		}
@@ -905,39 +984,46 @@ func (rv *receiving) linkFollowers() {
 // touchUpDirs sets directory permissions and times once their contents are
 // final.
 func (rv *receiving) touchUpDirs() {
+	if rv.o.DryRun || rv.root == nil || rv.s.inc {
+		return // with incremental recursion, done as each list finishes
+	}
+	for i := len(rv.files) - 1; i >= 0; i-- {
+		f := rv.files[i]
+		if f.IsDir() && f.Flags&flist.FlagCleared == 0 {
+			rv.touchUpDir(f)
+		}
+	}
+}
+
+// touchUpDir sets a directory's final permissions and time.
+func (rv *receiving) touchUpDir(f *flist.File) {
 	o := rv.o
 	if o.DryRun || rv.root == nil {
 		return
 	}
-	for i := len(rv.files) - 1; i >= 0; i-- {
-		f := rv.files[i]
-		if !f.IsDir() || f.Flags&flist.FlagCleared != 0 {
-			continue
+	name := rv.localName(f)
+	fi, err := rv.root.Lstat(name)
+	if err != nil || !fi.IsDir() {
+		return
+	}
+	cur := wireMode(fi.Mode()) & 0o7777
+	want := cur &^ 0o700
+	switch {
+	case o.Perms:
+		want = f.Perm()
+	default:
+		want = cur
+		if rv.s.stats.NumCreated > 0 && cur&0o700 == 0o700 && f.Perm()&0o700 != 0o700 {
+			// Directory we made writable on creation.
+			want = (f.Perm() &^ rv.umask) & 0o7777
 		}
-		name := rv.localName(f)
-		fi, err := rv.root.Lstat(name)
-		if err != nil || !fi.IsDir() {
-			continue
-		}
-		cur := wireMode(fi.Mode()) & 0o7777
-		want := cur &^ 0o700
-		switch {
-		case o.Perms:
-			want = f.Perm()
-		default:
-			want = cur
-			if rv.s.stats.NumCreated > 0 && cur&0o700 == 0o700 && f.Perm()&0o700 != 0o700 {
-				// Directory we made writable on creation.
-				want = (f.Perm() &^ rv.umask) & 0o7777
-			}
-		}
-		if want != cur {
-			rv.root.Chmod(name, goMode(want))
-		}
-		if o.Times && !o.OmitDirTimes && !sameTime(fi.ModTime(), f, -1) {
-			mt := time.Unix(f.ModTime, int64(f.ModNsec))
-			rv.root.Chtimes(name, mt, mt)
-		}
+	}
+	if want != cur {
+		rv.root.Chmod(name, goMode(want))
+	}
+	if o.Times && !o.OmitDirTimes && !sameTime(fi.ModTime(), f, -1) {
+		mt := time.Unix(f.ModTime, int64(f.ModNsec))
+		rv.root.Chtimes(name, mt, mt)
 	}
 }
 
@@ -963,11 +1049,16 @@ func (rv *receiving) receive() error {
 
 	phase := 0
 	for {
-		req, err := s.readRequest(len(rv.files))
+		req, err := s.readRequest()
 		if err != nil {
 			return err
 		}
 		if req.ndx == wire.NdxDone {
+			// With incremental recursion the sender echoes one NDX_DONE
+			// per finished list; the one for the last list ends phase 0.
+			if s.inc && s.lists.unfreed() > 0 && s.lists.freeOldest() > 0 {
+				continue
+			}
 			phase++
 			if phase > maxPhase {
 				break
@@ -975,7 +1066,10 @@ func (rv *receiving) receive() error {
 			rv.ack()
 			continue
 		}
-		f := rv.files[req.ndx]
+		f, l, err := s.lists.lookup(req.ndx)
+		if err != nil {
+			return err
+		}
 		if req.iflags&itemTransfer == 0 {
 			if !s.server && s.log.shouldLog(f, req.iflags, req.xname) {
 				s.log.item(f, req.iflags, req.xname)
@@ -993,8 +1087,12 @@ func (rv *receiving) receive() error {
 			s.stats.TotalTransferredSize += f.Size
 			continue
 		}
-		if err := rv.receiveFile(req, f, tr, fileHash); err != nil {
+		redo, err := rv.receiveFile(req, f, l, tr, fileHash)
+		if err != nil {
 			return err
+		}
+		if s.inc && !redo {
+			rv.events <- recvEvent{done: true, list: l}
 		}
 	}
 
@@ -1003,7 +1101,7 @@ func (rv *receiving) receive() error {
 	}
 	rv.ack()
 	if s.proto >= 31 {
-		req, err := s.readRequest(len(rv.files))
+		req, err := s.readRequest()
 		if err != nil {
 			return err
 		}
@@ -1016,15 +1114,15 @@ func (rv *receiving) receive() error {
 }
 
 // receiveFile reconstructs one file from the sender's tokens.
-func (rv *receiving) receiveFile(req request, f *flist.File, tr token.Reader, fileHash interface {
+func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr token.Reader, fileHash interface {
 	io.Writer
 	Sum([]byte) []byte
 	Reset()
-}) error {
+}) (redo bool, err error) {
 	s, o := rv.s, rv.o
 	head, err := s.readSumHead()
 	if err != nil {
-		return err
+		return false, err
 	}
 	name := rv.localName(f)
 
@@ -1076,7 +1174,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, tr token.Reader, fi
 		if s.log.format != "" && !s.logAfter() {
 			s.log.item(f, req.iflags, req.xname)
 		}
-		s.log.progress.begin(f.Name, f.Size, len(rv.files)-int(req.ndx)-1, len(rv.files))
+		s.log.progress.begin(f.Name, f.Size, max(0, s.lists.total-int(req.ndx)-1), s.lists.total)
 	}
 
 	fileHash.Reset()
@@ -1121,7 +1219,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, tr token.Reader, fi
 	for {
 		lit, blk, done, err := tr.Next()
 		if err != nil {
-			return fail(err)
+			return false, fail(err)
 		}
 		if done {
 			break
@@ -1133,7 +1231,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, tr token.Reader, fi
 			continue
 		}
 		if blk < 0 || blk >= head.count {
-			return fail(fmt.Errorf("%w: invalid block index %d (count %d)", wire.ErrProtocol, blk, head.count))
+			return false, fail(fmt.Errorf("%w: invalid block index %d (count %d)", wire.ErrProtocol, blk, head.count))
 		}
 		n := int(head.blength)
 		if blk == head.count-1 && head.remainder != 0 {
@@ -1141,7 +1239,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, tr token.Reader, fi
 		}
 		data := blockBuf[:n]
 		if basis == nil {
-			return fmt.Errorf("%w: block reference without a basis file for %s", wire.ErrProtocol, f.Name)
+			return false, fmt.Errorf("%w: block reference without a basis file for %s", wire.ErrProtocol, f.Name)
 		}
 		off := int64(blk) * int64(head.blength)
 		if _, err := basis.ReadAt(data, off); err != nil {
@@ -1160,13 +1258,13 @@ func (rv *receiving) receiveFile(req request, f *flist.File, tr token.Reader, fi
 	sum := make([]byte, s.xferSum.Size())
 	s.in.ReadFull(sum)
 	if err := s.in.Err(); err != nil {
-		return fail(err)
+		return false, fail(err)
 	}
 	if !s.server {
 		s.log.progress.end()
 	}
 	if tmp == nil {
-		return nil // data discarded
+		return false, nil // data discarded
 	}
 	if writeErr == nil {
 		writeErr = bw.Flush()
@@ -1179,7 +1277,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, tr token.Reader, fi
 	}
 	if writeErr != nil {
 		s.sendError("write failed on %q: %v", name, writeErr)
-		return nil
+		return false, nil
 	}
 	ok := bytes.Equal(sum, fileHash.Sum(nil))
 	if !ok {
@@ -1193,9 +1291,10 @@ func (rv *receiving) receiveFile(req request, f *flist.File, tr token.Reader, fi
 			if o.Verbose > 0 || s.log.hasI > 0 {
 				s.info("WARNING: " + f.Name + " failed verification -- update discarded (will try again).\n")
 			}
-			rv.events <- recvEvent{redo: req.ndx}
+			rv.events <- recvEvent{redo: req.ndx, list: l}
+			return true, nil
 		}
-		return nil
+		return false, nil
 	}
 
 	// Finish: attributes, then rename into place.
@@ -1209,7 +1308,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, tr token.Reader, fi
 		if err := rv.root.Rename(tmpName, name); err != nil {
 			rv.root.Remove(tmpName)
 			s.sendError("rename %q -> %q: %s", tmpName, name, errnoText(err))
-			return nil
+			return false, nil
 		}
 	}
 	if o.PartialDir != "" {
@@ -1223,7 +1322,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, tr token.Reader, fi
 	if o.RemoveSourceFiles && s.proto >= 30 || o.RemoveSourceFiles && !s.server {
 		s.out.SendMsgInt(wire.MsgSuccess, req.ndx)
 	}
-	return nil
+	return false, nil
 }
 
 func cmpErr(old, new error) error {
@@ -1273,19 +1372,19 @@ func (rv *receiving) createTemp(name string) (string, *os.File, error) {
 func (rv *receiving) deletePass() {
 	for _, f := range rv.files {
 		if f.IsDir() && f.Flags&flist.FlagContentDir != 0 && f.Flags&flist.FlagCleared == 0 {
-			rv.deleteInDir(rv.localName(f), f.Name)
+			rv.deleteInDir(rv.localName(f), f.Name, rv.inList)
 		}
 	}
 }
 
 // deleteInDir removes entries of the local directory name (wireName in the
 // file list) that the sender did not list.
-func (rv *receiving) deleteInDir(name, wireName string) {
+func (rv *receiving) deleteInDir(name, wireName string, keep func(wireName string) bool) {
 	s, o := rv.s, rv.o
 	if rv.root == nil || rv.single != "" {
 		return
 	}
-	if s.ioError&ioErrGeneral != 0 && !o.IgnoreErrors {
+	if s.ioErr.Load()&ioErrGeneral != 0 && !o.IgnoreErrors {
 		if !rv.delLimit {
 			s.info("IO error encountered -- skipping file deletion\n")
 			rv.delLimit = true
@@ -1307,7 +1406,7 @@ func (rv *receiving) deleteInDir(name, wireName string) {
 	}
 	for _, e := range entries {
 		wn := prefix + e.Name()
-		if _, ok := rv.byName[wn]; ok {
+		if keep(wn) {
 			continue
 		}
 		isDir := e.IsDir()
@@ -1317,7 +1416,7 @@ func (rv *receiving) deleteInDir(name, wireName string) {
 		if o.MaxDelete != 0 && (o.MaxDelete < 0 || rv.deletes >= o.MaxDelete) {
 			if !rv.delLimit {
 				rv.delLimit = true
-				s.ioError |= ioErrDelLimit
+				s.ioErr.Or(ioErrDelLimit)
 				s.info(fmt.Sprintf("Deletions stopped due to --max-delete limit (%d skipped)\n", 1))
 			}
 			continue

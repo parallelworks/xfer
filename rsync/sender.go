@@ -31,8 +31,9 @@ type request struct {
 const fnamecmpFname = 0x80
 
 // readRequest reads an index and its attributes, skipping keep-alives and
-// consuming deletion statistics.
-func (s *session) readRequest(numFiles int) (request, error) {
+// consuming deletion statistics. On the receiving side with incremental
+// recursion it also takes in the file lists that arrive between requests.
+func (s *session) readRequest() (request, error) {
 	r := s.in
 	for {
 		ndx := r.Ndx()
@@ -52,14 +53,17 @@ func (s *session) readRequest(numFiles int) (request, error) {
 			s.stats.NumDeleted = int64(del[0] + del[1] + del[2] + del[3] + del[4])
 			continue
 		}
+		if s.inc && !s.sender && (ndx == wire.NdxFlistEOF || ndx <= wire.NdxFlistOffset) {
+			if err := s.recvSubList(ndx); err != nil {
+				return request{}, err
+			}
+			continue
+		}
 		if ndx < 0 {
 			if ndx != wire.NdxDone {
 				return request{}, fmt.Errorf("%w: unexpected index %d", wire.ErrProtocol, ndx)
 			}
 			return request{ndx: ndx}, nil
-		}
-		if int(ndx) > numFiles {
-			return request{}, fmt.Errorf("%w: invalid file index %d", wire.ErrProtocol, ndx)
 		}
 		req := request{ndx: ndx, basisType: fnamecmpFname}
 		if s.proto < 29 {
@@ -76,11 +80,8 @@ func (s *session) readRequest(numFiles int) (request, error) {
 		if err := r.Err(); err != nil {
 			return request{}, err
 		}
-		if s.proto == 29 && int(ndx) == numFiles && req.iflags == itemIsNew {
+		if s.proto == 29 && !s.inc && int(ndx) == s.lists.total && req.iflags == itemIsNew {
 			continue // protocol 29 keep-alive
-		}
-		if int(ndx) == numFiles {
-			return request{}, fmt.Errorf("%w: invalid file index %d", wire.ErrProtocol, ndx)
 		}
 		return req, nil
 	}
@@ -155,7 +156,7 @@ func (s *session) tokenKind() token.Kind {
 }
 
 // sendFiles runs the sender's half of the transfer phase.
-func (s *session) sendFiles(files []*flist.File) error {
+func (s *session) sendFiles() error {
 	maxPhase := 1
 	if s.proto >= 29 {
 		maxPhase = 2
@@ -167,19 +168,32 @@ func (s *session) sendFiles(files []*flist.File) error {
 
 	if s.opts.RemoveSourceFiles {
 		s.onSuccess = func(ndx int32) {
-			if ndx >= 0 && int(ndx) < len(files) {
-				s.removeSource(files[ndx])
+			if f, _, err := s.lists.lookup(ndx); err == nil {
+				s.removeSource(f)
 			}
 		}
 	}
 
 	phase := 0
 	for {
-		req, err := s.readRequest(len(files))
+		if s.inc {
+			if err := s.sendLookahead(); err != nil {
+				return err
+			}
+		}
+		req, err := s.readRequest()
 		if err != nil {
 			return err
 		}
 		if req.ndx == wire.NdxDone {
+			// With incremental recursion each list is finished by an
+			// NDX_DONE; only the one for the last list ends the phase.
+			if s.inc && s.lists.unfreed() > 0 && s.lists.freeOldest() > 0 {
+				s.out.Lock()
+				s.out.W.Ndx(wire.NdxDone)
+				s.out.Unlock()
+				continue
+			}
 			phase++
 			if phase > maxPhase {
 				break
@@ -189,7 +203,10 @@ func (s *session) sendFiles(files []*flist.File) error {
 			s.out.Unlock()
 			continue
 		}
-		f := files[req.ndx]
+		f, _, err := s.lists.lookup(req.ndx)
+		if err != nil {
+			return err
+		}
 		if req.iflags&itemTransfer == 0 {
 			if !s.server && s.log.shouldLog(f, req.iflags, req.xname) {
 				s.log.item(f, req.iflags, req.xname)
@@ -227,9 +244,9 @@ func (s *session) sendFiles(files []*flist.File) error {
 	}
 
 	s.out.Lock()
-	if s.proto >= 30 && s.ioError != 0 {
+	if s.proto >= 30 && s.ioErr.Load() != 0 {
 		s.out.W.Flush()
-		s.out.Mux.WriteMsg(wire.MsgIOError, le32bytes(uint32(s.ioError)))
+		s.out.Mux.WriteMsg(wire.MsgIOError, le32bytes(uint32(s.ioErr.Load())))
 	}
 	s.out.W.Ndx(wire.NdxDone)
 	if s.server {
@@ -240,7 +257,7 @@ func (s *session) sendFiles(files []*flist.File) error {
 	if err != nil {
 		return err
 	}
-	return s.readFinalGoodbye(len(files))
+	return s.readFinalGoodbye()
 }
 
 func le32bytes(v uint32) []byte { return []byte{byte(v), byte(v >> 8), byte(v >> 16), byte(v >> 24)} }
@@ -268,10 +285,10 @@ func (s *session) sendFile(f *flist.File, req request, head sumHead, sums *delta
 	file, err := openFast(f.Source)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			s.ioError |= ioErrVanished
+			s.ioErr.Or(ioErrVanished)
 			s.sendWarningVanished(f)
 		} else {
-			s.ioError |= ioErrGeneral
+			s.ioErr.Or(ioErrGeneral)
 			s.sendError("send_files failed to open %q: %s", absPath(f.Source), errnoText(err))
 		}
 		if s.proto >= 30 {
@@ -290,7 +307,7 @@ func (s *session) sendFile(f *flist.File, req request, head sumHead, sums *delta
 		if s.log.format != "" && !s.logAfter() {
 			s.log.item(f, req.iflags, req.xname)
 		}
-		s.log.progress.begin(f.Name, f.Size, 0, len(s.flist))
+		s.log.progress.begin(f.Name, f.Size, 0, s.lists.total)
 	}
 	fileHash.Reset()
 	em := &sendEmitter{s: s, tw: tw, h: fileHash}
@@ -309,7 +326,7 @@ func (s *session) sendFile(f *flist.File, req request, head sumHead, sums *delta
 		if em.writeErr != nil {
 			return em.writeErr
 		}
-		s.ioError |= ioErrGeneral
+		s.ioErr.Or(ioErrGeneral)
 		s.sendError("read errors mapping %q: %v", absPath(f.Source), err)
 		if err := tw.End(); err != nil {
 			return err
@@ -423,14 +440,14 @@ func (s *session) readStats() {
 }
 
 // readFinalGoodbye waits for the receiving side's last NDX_DONE.
-func (s *session) readFinalGoodbye(numFiles int) error {
+func (s *session) readFinalGoodbye() error {
 	if s.proto < 29 {
 		if v := s.in.Int32(); s.in.Err() == nil && v != wire.NdxDone {
 			return fmt.Errorf("%w: invalid final goodbye %d", wire.ErrProtocol, v)
 		}
 		return s.in.Err()
 	}
-	req, err := s.readRequest(numFiles)
+	req, err := s.readRequest()
 	if err != nil {
 		return err
 	}
@@ -442,7 +459,7 @@ func (s *session) readFinalGoodbye(numFiles int) error {
 		if err != nil {
 			return err
 		}
-		if req, err = s.readRequest(numFiles); err != nil {
+		if req, err = s.readRequest(); err != nil {
 			return err
 		}
 	}

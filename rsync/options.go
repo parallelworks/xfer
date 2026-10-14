@@ -34,6 +34,7 @@ type Options struct {
 	MaxSize           int64
 	MinSize           int64
 	PruneEmptyDirs    bool // -m
+	NoIncRecursive    bool // --no-inc-recursive: send the whole file list up front
 	MkPath            bool // --mkpath
 	RemoveSourceFiles bool
 

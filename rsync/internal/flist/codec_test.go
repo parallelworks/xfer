@@ -127,3 +127,58 @@ func TestSortOrder(t *testing.T) {
 		t.Errorf("sorted = %q\nwant     %q", got, want)
 	}
 }
+
+// TestIncRecurseNames round-trips two lists with inline user and group
+// names, as incremental recursion sends them.
+func TestIncRecurseNames(t *testing.T) {
+	for _, varint := range []bool{false, true} {
+		cfg := exampleConfig(31, varint)
+		cfg.IncRecurse = true
+		var buf bytes.Buffer
+		w := wire.NewWriter(&buf)
+		w.Protocol = 31
+		enc := NewEncoder(w, cfg)
+		enc.LookupUser = func(id uint32) string { return map[uint32]string{1000: "alice", 0: "root"}[id] }
+		enc.LookupGroup = func(id uint32) string { return map[uint32]string{1000: "users", 20: "staff"}[id] }
+		lists := [][]*File{exampleFiles(), {
+			{Name: "d/x", Mode: TypeReg | 0o644, ModTime: 1, UID: 0, GID: 20},
+			{Name: "d/y", Mode: TypeReg | 0o644, ModTime: 1, UID: 1000, GID: 20},
+		}}
+		start := int32(1)
+		for _, l := range lists {
+			enc.StartList(start)
+			for _, f := range l {
+				if err := enc.Encode(f); err != nil {
+					t.Fatal(err)
+				}
+			}
+			enc.End(0)
+			start += int32(len(l)) + 1
+		}
+		w.Flush()
+
+		r := wire.NewReader(bytes.NewReader(buf.Bytes()))
+		r.Protocol = 31
+		dec := NewDecoder(r, cfg)
+		start = 1
+		for li, l := range lists {
+			dec.StartList(start)
+			for i, want := range l {
+				g, _, err := dec.Decode()
+				if err != nil || g == nil {
+					t.Fatalf("varint %v list %d entry %d: %v %v", varint, li, i, g, err)
+				}
+				if g.Name != want.Name || g.UID != want.UID || g.GID != want.GID {
+					t.Errorf("varint %v list %d: got %+v want %+v", varint, li, g, want)
+				}
+			}
+			if f, _, err := dec.Decode(); f != nil || err != nil {
+				t.Fatalf("varint %v list %d: no end marker: %v %v", varint, li, f, err)
+			}
+			start += int32(len(l)) + 1
+		}
+		if dec.Users[1000] != "alice" || dec.Users[0] != "root" || dec.Groups[20] != "staff" || dec.Groups[1000] != "users" {
+			t.Errorf("varint %v: names %v %v", varint, dec.Users, dec.Groups)
+		}
+	}
+}

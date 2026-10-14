@@ -76,7 +76,7 @@ func serve(ctx context.Context, args []string, conn io.ReadWriter, stderr io.Wri
 		s.fatal(err)
 		return err
 	}
-	if code := max(s.exitCode, codeForIOError(s.ioError)); code != 0 {
+	if code := max(s.exitCode, codeForIOError(s.ioErr.Load())); code != 0 {
 		return &ExitError{Code: code, Err: errors.New(exitMessage(code))}
 	}
 	return nil
@@ -102,7 +102,7 @@ func (s *session) runServer(clientInfo string, paths []string) error {
 		if len(files) == 0 {
 			return s.out.Flush()
 		}
-		return s.sendFiles(files)
+		return s.sendFiles()
 	}
 	filters := filter.NewList(nil)
 	if receiverWantsList(o, s.proto) {
@@ -223,81 +223,157 @@ func (s *session) recvFilterList() (*filter.List, error) {
 // sendFileList builds and sends the file list, returning it sorted.
 func (s *session) sendFileList(paths []string, filters *filter.List) ([]*flist.File, error) {
 	start := time.Now()
-	files, err := s.scan(paths, filters)
-	if err != nil {
-		return nil, err
-	}
+	sc := s.newScanner(filters)
+	files := sc.scanArgs(paths)
 	s.stats.FlistBuildTime = time.Since(start)
 
 	xferStart := time.Now()
 	s.out.Lock()
 	before := s.counter.written.Load() + int64(s.out.W.Buffered())
-	enc := flist.NewEncoder(s.out.W, s.flistConfig())
-	enc.LookupUser, enc.LookupGroup = userName, groupName
-	for _, f := range files {
-		if err := enc.Encode(f); err != nil {
-			s.out.Unlock()
-			return nil, err
-		}
+	cfg := s.flistConfig()
+	s.enc = flist.NewEncoder(s.out.W, cfg)
+	s.enc.LookupUser, s.enc.LookupGroup = userName, groupName
+	s.lists = newFileLists(s.inc)
+	s.enc.StartList(s.lists.next)
+	if err := s.encodeList(files); err != nil {
+		s.out.Unlock()
+		return nil, err
 	}
-	ioErr := s.ioError
-	if s.opts.IgnoreErrors {
-		ioErr = 0
-	}
-	needMsg := enc.End(ioErr)
-	err = s.out.W.Flush()
+	err := s.out.W.Flush()
 	s.out.Unlock()
 	if err != nil {
 		return nil, err
-	}
-	if needMsg {
-		s.out.SendMsgInt(wire.MsgIOError, ioErr)
 	}
 	s.stats.FlistXferTime = time.Since(xferStart)
 	s.stats.FlistSize = s.counter.written.Load() - before
 
 	flist.Sort(files, s.proto)
-	s.flist = files
+	l := s.lists.add(files, s.firstParent(files))
 	s.countFiles(files)
 	if s.opts.ListOnly && !s.server {
 		for _, f := range files {
 			s.log.print(listLine(f, s.opts.HumanReadable))
 		}
 	}
+	if s.inc {
+		s.exp = newExpander(sc, s.lists, l)
+		if err := s.sendFirstExtra(files); err != nil {
+			return nil, err
+		}
+	}
 	return files, nil
 }
 
-// recvFileList reads the sender's file list and returns it sorted and
-// cleaned, with the sender's uid and gid names.
+// encodeList writes the entries of one file list and its end marker. The
+// caller holds the output lock.
+func (s *session) encodeList(files []*flist.File) error {
+	for _, f := range files {
+		if err := s.enc.Encode(f); err != nil {
+			return err
+		}
+	}
+	ioErr := s.ioErr.Load()
+	if s.opts.IgnoreErrors {
+		ioErr = 0
+	}
+	if s.enc.End(ioErr) {
+		s.out.W.Flush()
+		s.out.Mux.WriteMsg(wire.MsgIOError, le32bytes(uint32(ioErr)))
+	}
+	return s.out.W.Err()
+}
+
+// firstParent is the directory-table index of the first list's parent: the
+// "." entry of a transfer root with incremental recursion, else none.
+func (s *session) firstParent(files []*flist.File) int32 {
+	if s.inc {
+		for _, f := range files {
+			if f.Flags&flist.FlagCleared == 0 {
+				if f.Name == "." {
+					return 0
+				}
+				break
+			}
+		}
+	}
+	return -1
+}
+
+// recvFileList reads the sender's first file list and returns it sorted
+// and cleaned, with the sender's uid and gid names.
 func (s *session) recvFileList() (files []*flist.File, users, groups map[uint32]string, err error) {
 	before := s.counter.read.Load()
-	dec := flist.NewDecoder(s.in, s.flistConfig())
-	var ioErr int32
-	for {
-		f, e, err := dec.Decode()
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		if f == nil {
-			ioErr = e
-			break
-		}
-		files = append(files, f)
+	s.dec = flist.NewDecoder(s.in, s.flistConfig())
+	s.lists = newFileLists(s.inc)
+	s.dec.StartList(s.lists.next)
+	files, err = s.decodeList()
+	if err != nil {
+		return nil, nil, nil, err
 	}
-	trailerErr, err := dec.ReadTrailer()
+	trailerErr, err := s.dec.ReadTrailer()
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	if !s.opts.IgnoreErrors {
-		s.ioError |= (ioErr | trailerErr) & ioErrValidMask
+		s.ioErr.Or(trailerErr & ioErrValidMask)
 	}
 	s.stats.FlistSize = s.counter.read.Load() - before
-	s.recvOrder = slices.Clone(files)
+	s.lists.add(files, s.firstParent(files))
+	s.countFiles(files)
+	return files, s.dec.Users, s.dec.Groups, nil
+}
+
+// decodeList reads the entries of one file list up to its end marker and
+// returns them sorted and cleaned.
+func (s *session) decodeList() ([]*flist.File, error) {
+	var files []*flist.File
+	for {
+		f, e, err := s.dec.Decode()
+		if err != nil {
+			return nil, err
+		}
+		if f == nil {
+			if !s.opts.IgnoreErrors {
+				s.ioErr.Or(e & ioErrValidMask)
+			}
+			break
+		}
+		files = append(files, f)
+	}
 	flist.Sort(files, s.proto)
 	flist.Clean(files)
-	s.flist = files
+	return files, nil
+}
+
+// recvSubList handles an index announcing a further file list (incremental
+// recursion): NdxFlistEOF, or the list of a directory's contents.
+func (s *session) recvSubList(ndx int32) error {
+	if ndx == wire.NdxFlistEOF {
+		s.lists.setEOF()
+		return nil
+	}
+	dirNdx := wire.NdxFlistOffset - ndx
+	d := s.lists.dir(dirNdx)
+	if d == nil || s.lists.done() {
+		return fmt.Errorf("%w: invalid directory index %d", wire.ErrProtocol, dirNdx)
+	}
+	s.dec.StartList(s.lists.next)
+	files, err := s.decodeList()
+	if err != nil {
+		return err
+	}
+	prefix := d.Name + "/"
+	for _, f := range files {
+		if !strings.HasPrefix(f.Name, prefix) || strings.Contains(f.Name[len(prefix):], "/") {
+			return fmt.Errorf("%w: invalid path %q from sender in the list of %q", wire.ErrProtocol, f.Name, d.Name)
+		}
+	}
+	l := s.lists.add(files, dirNdx)
 	s.countFiles(files)
-	return files, dec.Users, dec.Groups, nil
+	if s.onSubList != nil {
+		s.onSubList(l)
+	}
+	return nil
 }
 
 func (s *session) countFiles(files []*flist.File) {

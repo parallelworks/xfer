@@ -10,6 +10,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/parallelworks/xfer/rsync/internal/checksum"
 	"github.com/parallelworks/xfer/rsync/internal/flist"
@@ -36,10 +37,29 @@ const (
 	cfID0Names          = 1 << 8
 )
 
-// clientCaps is the capability string our client sends with -e. We leave
-// out 'i' (incremental recursion), 's' (iconv) and 'I' (inplace partial
-// dirs), whose semantics are not implemented.
+// clientCaps is the capability string our client sends with -e; 'i'
+// (incremental recursion) is added when the options allow it. We leave out
+// 's' (iconv) and 'I' (inplace partial dirs), whose semantics are not
+// implemented.
 const clientCaps = ".LfxCvu"
+
+// allowIncRecurse reports whether this side can use incremental recursion
+// in the given role. The receiving side decides the options that only
+// matter to it. We also leave it out for -R, -H and --list-only.
+func allowIncRecurse(o *Options, sender bool) bool {
+	if o.NoIncRecursive || !o.Recursive || o.Relative || o.HardLinks || o.ListOnly {
+		return false
+	}
+	if (o.Protocol != 0 && o.Protocol < 30) || sender {
+		return o.Protocol == 0 || o.Protocol >= 30
+	}
+	switch o.Delete {
+	case DeleteNone, DeleteAuto, DeleteDuring:
+	default:
+		return false
+	}
+	return !o.DelayUpdates && !o.PruneEmptyDirs
+}
 
 var (
 	checksumList = []string{"xxh128", "xxh3", "xxh64", "md5", "md4"}
@@ -77,17 +97,25 @@ type session struct {
 	// localTransfer is set when both ends run in this process.
 	localTransfer bool
 
-	// flist is the sorted file list; recvOrder is the receiver's list in
-	// transmission order, which hard-link references use.
-	flist     []*flist.File
-	recvOrder []*flist.File
+	// inc is set with incremental recursion. lists holds the file lists
+	// in use; enc and dec carry the file-list coding state, which spans
+	// every list of the session.
+	inc   bool
+	lists *fileLists
+	enc   *flist.Encoder
+	dec   *flist.Decoder
+	exp   *expander // sender: directories whose lists are still to send
+
+	// onSubList, if set, is called on the receiving side for each list
+	// that arrives after the first.
+	onSubList func(l *fileList)
 
 	onSuccess func(ndx int32)
 	onNoSend  func(ndx int32)
 
 	peerStats struct{ read, written int64 }
 
-	ioError    int32
+	ioErr      atomic.Int32 // ioErr* bits, set by more than one goroutine
 	stats      Stats
 	exitCode   int // non-fatal outcome, e.g. 23 for partial transfers
 	peerExited bool
@@ -146,11 +174,18 @@ func (s *session) handshake(clientInfo string) error {
 					s.compat |= c.flag
 				}
 			}
+			if strings.IndexByte(clientInfo, 'i') >= 0 && allowIncRecurse(s.opts, s.sender) {
+				s.compat |= cfIncRecurse
+			}
 			w.Varint(int32(s.compat))
 		} else {
 			w.Flush()
 			s.compat = uint32(r.Varint())
+			if s.compat&cfIncRecurse != 0 && !allowIncRecurse(s.opts, s.sender) {
+				return &ExitError{Code: ExitSyntax, Err: errors.New("Incompatible options specified for inc-recursive connection.")}
+			}
 		}
+		s.inc = s.compat&cfIncRecurse != 0
 	}
 	s.seedFirst = s.compat&cfChksumSeedFix != 0
 
@@ -323,6 +358,7 @@ func (s *session) flistConfig() flist.Config {
 		Relative:         o.Relative,
 		AlwaysChecksum:   o.Checksum,
 		ChecksumLen:      s.fileSum.Size(),
+		IncRecurse:       s.inc,
 	}
 }
 
@@ -340,7 +376,7 @@ func (s *session) handleMsg(tag byte, payload []byte) error {
 		s.log.remote(true, payload)
 	case wire.MsgIOError:
 		if len(payload) == 4 {
-			s.ioError |= int32(le32(payload)) & ioErrValidMask
+			s.ioErr.Or(int32(le32(payload)) & ioErrValidMask)
 		}
 	case wire.MsgNoop, wire.MsgIOTimeout, wire.MsgBlockStats:
 	case wire.MsgDeleted:

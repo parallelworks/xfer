@@ -239,6 +239,9 @@ var optionTable = []option{
 		return o.addRulesFrom(v, "+ ")
 	}},
 	{long: []string{"cvs-exclude"}, short: 'C', noNeg: true, set: func(o *Options, _ string) error { o.CVSExclude = true; return nil }},
+	{long: []string{"inc-recursive", "i-r"},
+		set:   func(o *Options, _ string) error { o.NoIncRecursive = false; return nil },
+		unset: func(o *Options) { o.NoIncRecursive = true }},
 	{long: []string{"whole-file"}, short: 'W',
 		set:   func(o *Options, _ string) error { t := true; o.WholeFile = &t; return nil },
 		unset: func(o *Options) { f := false; o.WholeFile = &f }},

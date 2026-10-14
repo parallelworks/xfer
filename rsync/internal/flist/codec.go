@@ -53,6 +53,11 @@ type Config struct {
 	Relative         bool
 	AlwaysChecksum   bool
 	ChecksumLen      int // length of per-file checksums with AlwaysChecksum
+
+	// IncRecurse is set with incremental recursion: the file list arrives
+	// as several lists, user and group names are sent inline the first
+	// time each id appears, and no id lists follow the lists.
+	IncRecurse bool
 }
 
 // state is the "same as the previous entry" cache, identical on both
@@ -73,7 +78,8 @@ type Encoder struct {
 	cfg Config
 	st  state
 
-	sent                  int32
+	sent                  int32 // entries sent in the current list
+	listStart             int32 // global index of the current list's first entry
 	hlinks                map[[2]int64]int32
 	users                 map[uint32]string
 	groups                map[uint32]string
@@ -87,6 +93,32 @@ type Encoder struct {
 // NewEncoder returns an Encoder writing to w.
 func NewEncoder(w *wire.Writer, cfg Config) *Encoder {
 	return &Encoder{w: w, cfg: cfg, hlinks: map[[2]int64]int32{}, users: map[uint32]string{}, groups: map[uint32]string{}}
+}
+
+// StartList begins a new file list whose first entry has global index
+// start. Hard-link references are numbered by these global indexes.
+func (e *Encoder) StartList(start int32) {
+	e.listStart, e.sent = start, 0
+}
+
+// inlineName returns the name to send inline for an id seen for the first
+// time with incremental recursion, or "" when none is sent.
+func (e *Encoder) inlineName(id uint32, m map[uint32]string, lookup func(uint32) string) string {
+	if e.cfg.NumericIDs {
+		return ""
+	}
+	if _, ok := m[id]; ok {
+		return ""
+	}
+	name := ""
+	if lookup != nil {
+		name = lookup(id)
+	}
+	if len(name) > 255 {
+		name = name[:255]
+	}
+	m[id] = name
+	return name
 }
 
 func (e *Encoder) noteID(id uint32, m map[uint32]string, order *[]uint32, lookup func(uint32) string) {
@@ -169,17 +201,30 @@ func (e *Encoder) Encode(f *File) error {
 		st.rdevRaw = 0
 	}
 
+	var userName, groupName string
 	if !cfg.PreserveUID || (f.UID == st.uid && st.lastName != "") {
 		xf |= xmitSameUID
 	} else {
 		st.uid = f.UID
-		e.noteID(f.UID, e.users, &e.userOrder, e.LookupUser)
+		if cfg.IncRecurse {
+			if userName = e.inlineName(f.UID, e.users, e.LookupUser); userName != "" {
+				xf |= xmitUserNameFollows
+			}
+		} else {
+			e.noteID(f.UID, e.users, &e.userOrder, e.LookupUser)
+		}
 	}
 	if !cfg.PreserveGID || (f.GID == st.gid && st.lastName != "") {
 		xf |= xmitSameGID
 	} else {
 		st.gid = f.GID
-		e.noteID(f.GID, e.groups, &e.groupOrder, e.LookupGroup)
+		if cfg.IncRecurse {
+			if groupName = e.inlineName(f.GID, e.groups, e.LookupGroup); groupName != "" {
+				xf |= xmitGroupNameFollows
+			}
+		} else {
+			e.noteID(f.GID, e.groups, &e.groupOrder, e.LookupGroup)
+		}
 	}
 
 	if f.ModTime == st.mtime {
@@ -192,7 +237,7 @@ func (e *Encoder) Encode(f *File) error {
 	}
 
 	// Hard links.
-	abbrev := false
+	abbrev, follower := false, false
 	sendDevIno := false
 	if cfg.HardLinks && f.Flags&FlagHlinked != 0 && !f.IsDir() {
 		if proto >= 30 {
@@ -200,10 +245,14 @@ func (e *Encoder) Encode(f *File) error {
 			key := [2]int64{f.Dev, f.Ino}
 			if leader, ok := e.hlinks[key]; ok {
 				f.HLinkIndex = leader
-				abbrev = true
+				// A leader in an earlier list is referenced, but the
+				// attributes are sent in full.
+				abbrev = leader >= e.listStart
+				follower = true
 			} else {
-				e.hlinks[key] = e.sent
-				f.HLinkIndex = e.sent
+				gnum := e.listStart + e.sent
+				e.hlinks[key] = gnum
+				f.HLinkIndex = gnum
 				xf |= xmitHlinkFirst
 			}
 		} else if proto >= 28 {
@@ -272,8 +321,10 @@ func (e *Encoder) Encode(f *File) error {
 	st.lastName = name
 	e.sent++
 
-	if abbrev {
+	if follower {
 		w.Varint(f.HLinkIndex)
+	}
+	if abbrev {
 		return w.Err()
 	}
 
@@ -297,9 +348,17 @@ func (e *Encoder) Encode(f *File) error {
 	}
 	if cfg.PreserveUID && xf&xmitSameUID == 0 {
 		e.varint30(int32(f.UID))
+		if xf&xmitUserNameFollows != 0 {
+			w.Byte(byte(len(userName)))
+			w.Write([]byte(userName))
+		}
 	}
 	if cfg.PreserveGID && xf&xmitSameGID == 0 {
 		e.varint30(int32(f.GID))
+		if xf&xmitGroupNameFollows != 0 {
+			w.Byte(byte(len(groupName)))
+			w.Write([]byte(groupName))
+		}
 	}
 	if sendRdev {
 		switch {
@@ -374,7 +433,7 @@ func (e *Encoder) End(ioError int32) (sendIOErrorMsg bool) {
 	default:
 		w.Byte(0)
 	}
-	if !cfg.NumericIDs {
+	if !cfg.NumericIDs && !cfg.IncRecurse {
 		if cfg.PreserveUID {
 			e.writeIDList(e.userOrder, e.users, e.LookupUser)
 		}
@@ -419,17 +478,28 @@ type Decoder struct {
 	cfg Config
 	st  state
 
-	// Received entries in transmission order, for hard-link leaders.
-	recv []*File
+	listStart int32           // global index of the current list's first entry
+	count     int32           // entries decoded in the current list
+	leaders   map[int32]*File // hard-link leaders by global index
 
-	// Users and Groups map ids to names, filled by ReadIDLists.
+	// Users and Groups map ids to names: from the id lists after the file
+	// list, or inline with incremental recursion.
 	Users, Groups map[uint32]string
 }
 
 // NewDecoder returns a Decoder reading from r.
 func NewDecoder(r *wire.Reader, cfg Config) *Decoder {
-	return &Decoder{r: r, cfg: cfg}
+	return &Decoder{r: r, cfg: cfg, leaders: map[int32]*File{}, Users: map[uint32]string{}, Groups: map[uint32]string{}}
 }
+
+// StartList begins a new file list whose first entry has global index
+// start.
+func (d *Decoder) StartList(start int32) {
+	d.listStart, d.count = start, 0
+}
+
+// Leader returns the hard-link leader with global index gnum.
+func (d *Decoder) Leader(gnum int32) *File { return d.leaders[gnum] }
 
 func (d *Decoder) varint30() int32 {
 	if d.cfg.Protocol < 30 {
@@ -497,30 +567,34 @@ func (d *Decoder) Decode() (f *File, ioError int32, err error) {
 	}
 
 	f = &File{Name: name, HLinkIndex: -1}
-	idx := int32(len(d.recv))
-	d.recv = append(d.recv, f)
+	idx := d.listStart + d.count
+	d.count++
 
 	if proto >= 30 && xf&xmitHlinked != 0 {
 		f.Flags |= FlagHlinked
 		if xf&xmitHlinkFirst != 0 {
 			f.Flags |= FlagHlinkFirst
 			f.HLinkIndex = idx
+			d.leaders[idx] = f
 		} else {
-			leader := r.Varint()
+			gnum := r.Varint()
 			if err := r.Err(); err != nil {
 				return nil, 0, err
 			}
-			if leader < 0 || leader >= idx {
-				return nil, 0, fmt.Errorf("%w: hard-link reference out of range: %d", wire.ErrProtocol, leader)
+			l := d.leaders[gnum]
+			if gnum < 0 || gnum >= idx || l == nil {
+				return nil, 0, fmt.Errorf("%w: hard-link reference out of range: %d", wire.ErrProtocol, gnum)
 			}
-			f.HLinkIndex = leader
-			l := d.recv[leader]
-			f.Size, f.ModTime, f.ModNsec, f.Mode = l.Size, l.ModTime, l.ModNsec, l.Mode
-			f.UID, f.GID, f.RdevMajor, f.RdevMinor = l.UID, l.GID, l.RdevMajor, l.RdevMinor
-			f.Link, f.Checksum = l.Link, l.Checksum
-			st.mtime, st.mode, st.uid, st.gid, st.rdevMajor = l.ModTime, l.Mode, l.UID, l.GID, l.RdevMajor
-			d.dirFlags(f, xf)
-			return f, 0, nil
+			f.HLinkIndex = gnum
+			if gnum >= d.listStart {
+				// Same list: the attributes are the leader's.
+				f.Size, f.ModTime, f.ModNsec, f.Mode = l.Size, l.ModTime, l.ModNsec, l.Mode
+				f.UID, f.GID, f.RdevMajor, f.RdevMinor = l.UID, l.GID, l.RdevMajor, l.RdevMinor
+				f.Link, f.Checksum = l.Link, l.Checksum
+				st.mtime, st.mode, st.uid, st.gid, st.rdevMajor = l.ModTime, l.Mode, l.UID, l.GID, l.RdevMajor
+				d.dirFlags(f, xf)
+				return f, 0, nil
+			}
 		}
 	}
 
@@ -560,14 +634,14 @@ func (d *Decoder) Decode() (f *File, ioError int32, err error) {
 	if cfg.PreserveUID && xf&xmitSameUID == 0 {
 		st.uid = uint32(d.varint30())
 		if proto >= 30 && xf&xmitUserNameFollows != 0 {
-			d.r.Vstring(255) // inline names only appear with inc-recurse
+			d.Users[st.uid] = d.readName() // inline with incremental recursion
 		}
 	}
 	f.UID = st.uid
 	if cfg.PreserveGID && xf&xmitSameGID == 0 {
 		st.gid = uint32(d.varint30())
 		if proto >= 30 && xf&xmitGroupNameFollows != 0 {
-			d.r.Vstring(255)
+			d.Groups[st.gid] = d.readName()
 		}
 	}
 	f.GID = st.gid
@@ -657,7 +731,7 @@ func (d *Decoder) dirFlags(f *File, xf uint32) {
 // ReadTrailer reads what follows the end marker without inc-recurse: the
 // id lists and, before protocol 30, the I/O error code.
 func (d *Decoder) ReadTrailer() (ioError int32, err error) {
-	if !d.cfg.NumericIDs {
+	if !d.cfg.NumericIDs && !d.cfg.IncRecurse {
 		if d.cfg.PreserveUID {
 			d.Users = d.readIDList()
 		}
@@ -692,9 +766,6 @@ func (d *Decoder) readName() string {
 	d.r.ReadFull(b)
 	return string(b)
 }
-
-// Received returns the entries in transmission order.
-func (d *Decoder) Received() []*File { return d.recv }
 
 func checkName(name string, relative bool) error {
 	if name == "" {

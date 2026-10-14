@@ -50,8 +50,10 @@ type File struct {
 	HLinkIndex int32
 	Dev, Ino   int64
 
-	// Sender-only: where to read the file from.
-	Source string
+	// Sender-only: where to read the file from, and for a directory the
+	// device of its transfer root (for -x when it is listed later).
+	Source  string
+	RootDev uint64
 }
 
 func (f *File) IsDir() bool     { return f.Mode&TypeMask == TypeDir }

@@ -178,7 +178,7 @@ func (c *Client) Run(ctx context.Context, o *Options, operands []string) (*Stats
 	if !o.ListOnly {
 		writeSummary(stdout, stats, o, time.Since(start))
 	}
-	code := max(s.exitCode, codeForIOError(s.ioError))
+	code := max(s.exitCode, codeForIOError(s.ioErr.Load()))
 	if code != 0 {
 		return stats, &ExitError{Code: code, Err: errors.New(exitMessage(code))}
 	}
@@ -259,11 +259,10 @@ func (s *session) runClient(conn io.ReadWriter, srcs []location, dest location, 
 		for _, l := range srcs {
 			paths = append(paths, l.path)
 		}
-		files, err := s.sendFileList(paths, localRules(o, filters))
-		if err != nil {
+		if _, err := s.sendFileList(paths, localRules(o, filters)); err != nil {
 			return err
 		}
-		return s.sendFiles(files)
+		return s.sendFiles()
 	}
 	if err := s.sendFilterList(filters, false); err != nil {
 		return err
@@ -405,7 +404,11 @@ func serverArgs(o *Options, push bool) []string {
 	flag(o.Sparse, 'S')
 	flag(o.Compress && (o.CompressChoice == "" || o.CompressChoice == "zlib"), 'z')
 	if o.Protocol == 0 || o.Protocol >= 30 {
-		b.WriteString("e" + clientCaps)
+		caps := clientCaps
+		if allowIncRecurse(o, push) {
+			caps = "." + "i" + caps[1:]
+		}
+		b.WriteString("e" + caps)
 	}
 	if b.Len() > 1 {
 		args = append(args, b.String())

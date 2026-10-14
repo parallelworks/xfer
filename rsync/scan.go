@@ -28,24 +28,52 @@ type scanner struct {
 
 	implied map[string]bool // -R ancestors already listed
 	rootDev uint64          // device of the current top-level argument, for -x
+
+	// With incremental recursion, walk lists a directory's contents
+	// without descending, and leaves holds the filter scopes of transfer
+	// roots that stay entered while their lists are sent.
+	inc    bool
+	leaves []func()
 }
 
-func (s *session) scan(args []string, filters *filter.List) ([]*flist.File, error) {
-	sc := &scanner{s: s, o: s.opts, filters: filters, implied: map[string]bool{}}
+func (s *session) newScanner(filters *filter.List) *scanner {
+	return &scanner{s: s, o: s.opts, filters: filters, implied: map[string]bool{}, inc: s.inc}
+}
+
+// scanArgs lists the source arguments: everything, or with incremental
+// recursion the top level of the transfer. The entries are in the order
+// they are sent, not sorted.
+func (sc *scanner) scanArgs(args []string) []*flist.File {
 	if len(args) == 0 && (sc.o.Recursive || sc.o.Dirs || sc.o.ListOnly) {
 		args = []string{"."}
 	}
 	for _, arg := range args {
 		sc.addArg(arg)
 	}
+	return sc.take()
+}
+
+// take returns the entries listed since the last call, with --checksum
+// sums computed.
+func (sc *scanner) take() []*flist.File {
 	if sc.o.Checksum {
 		sc.checksumAll()
 	}
-	return sc.files, nil
+	files := sc.files
+	sc.files = nil
+	return files
+}
+
+// close leaves the filter scopes still entered.
+func (sc *scanner) close() {
+	for i := len(sc.leaves) - 1; i >= 0; i-- {
+		sc.leaves[i]()
+	}
+	sc.leaves = nil
 }
 
 func (sc *scanner) ioError(bits int32, format string, args ...any) {
-	sc.s.ioError |= bits
+	sc.s.ioErr.Or(bits)
 	sc.s.sendError(format, args...)
 }
 
@@ -158,8 +186,18 @@ func (sc *scanner) addArg(arg string) {
 			return
 		}
 		f := sc.addEntry(p, name, fi, flist.FlagTopDir|flist.FlagContentDir)
-		if f != nil {
+		if f == nil {
+			return
+		}
+		f.RootDev = sc.rootDev
+		if !sc.inc {
 			sc.walk(p, name, true)
+		} else if dotDir {
+			// The contents of a dot-dir argument are in the first list;
+			// its subdirectories get lists of their own.
+			if leave := sc.walkDir(p, name); leave != nil {
+				sc.leaves = append(sc.leaves, leave)
+			}
 		}
 		return
 	}
@@ -237,6 +275,17 @@ func (sc *scanner) addEntry(p, name string, fi fs.FileInfo, flags uint32) *flist
 // walk lists the contents of directory p (wire name dir), recursing with
 // -r. top marks a transfer root, whose own -x device is the reference.
 func (sc *scanner) walk(p, dir string, top bool) {
+	if leave := sc.walkDir(p, dir); leave != nil {
+		defer leave()
+	}
+}
+
+// walkDir lists the contents of directory p (wire name dir). Without
+// incremental recursion it descends into subdirectories; with it, they are
+// listed later on their own. It returns the function that leaves the
+// directory's filter scope, which with incremental recursion must stay
+// entered while the subdirectories are listed.
+func (sc *scanner) walkDir(p, dir string) (leave func()) {
 	o := sc.o
 	leave, err := sc.filters.EnterDir(dirKey(dir), func(base string) ([]byte, error) {
 		return os.ReadFile(filepath.Join(p, base))
@@ -244,14 +293,11 @@ func (sc *scanner) walk(p, dir string, top bool) {
 	if err != nil {
 		sc.ioError(ioErrGeneral, "%v", err)
 	}
-	if leave != nil {
-		defer leave()
-	}
 
 	d, err := openFast(p)
 	if err != nil {
 		sc.ioError(ioErrGeneral, "opendir %q failed: %v", p, errnoText(err))
-		return
+		return leave
 	}
 	entries, err := d.ReadDir(-1)
 	d.Close()
@@ -272,7 +318,7 @@ func (sc *scanner) walk(p, dir string, top bool) {
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				// Vanished between readdir and stat.
-				sc.s.ioError |= ioErrVanished
+				sc.s.ioErr.Or(ioErrVanished)
 				sc.s.log.errorf("file has vanished: %q\n", absPath(childPath))
 			} else {
 				sc.ioError(ioErrGeneral, "%v", err)
@@ -296,11 +342,15 @@ func (sc *scanner) walk(p, dir string, top bool) {
 			}
 			continue
 		}
+		f.RootDev = sc.rootDev
 		subdirs = append(subdirs, sub{childPath, name})
 	}
-	for _, sd := range subdirs {
-		sc.walk(sd.p, sd.name, false)
+	if !sc.inc {
+		for _, sd := range subdirs {
+			sc.walk(sd.p, sd.name, false)
+		}
 	}
+	return leave
 }
 
 // dirKey is the directory name handed to per-directory filter scoping.
