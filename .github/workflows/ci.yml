@@ -1,0 +1,98 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS ships openrsync as /usr/bin/rsync, so the interop suite
+        # there runs against a second, independent implementation.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: vet
+        run: go vet ./...
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: install GNU rsync
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y rsync
+      - name: test
+        run: go test -race -count=1 -timeout 20m ./...
+
+  # Interoperability with the rsync versions found in the wild: each
+  # container's distribution packages a different GNU rsync, from 3.1.3
+  # (protocol 31 without algorithm negotiation) to the newest release.
+  interop:
+    name: interop (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:20.04 # rsync 3.1.3
+            install: apt-get update && apt-get install -y rsync
+          - image: debian:bookworm # rsync 3.2.7
+            install: apt-get update && apt-get install -y rsync
+          - image: debian:trixie # rsync 3.5.0 (protocol 32)
+            install: apt-get update && apt-get install -y rsync
+          - image: alpine:edge # newest rsync (3.5.1, protocol 33)
+            install: apk add --no-cache rsync
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: build static binaries
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          go build -o bin/xfer ./cmd/xfer
+          go test -c -o bin/rsync.test ./rsync
+      - name: run interop suite in ${{ matrix.image }}
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w/rsync ${{ matrix.image }} sh -c '
+            ${{ matrix.install }} >/dev/null &&
+            rsync --version | head -1 &&
+            XFER_INTEROP_XFER=/w/bin/xfer /w/bin/rsync.test -test.run "TestInterop" -test.v -test.timeout 30m'
+
+  # FIPS 140-only mode: Go refuses non-approved algorithms, so this catches
+  # any code path that would reach MD4/MD5/SHA-1.
+  fips:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: sudo apt-get update && sudo apt-get install -y rsync
+      - name: test in fips140=only mode
+        env:
+          GODEBUG: fips140=only
+        run: go test -count=1 -run 'FIPS|Interop/.*(archive|delta|compress)' ./rsync/...
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: fuzz decoders
+        run: |
+          for target in FuzzDecode:./rsync/internal/flist FuzzReader:./rsync/internal/wire; do
+            go test -run '^$' -fuzz "^${target%%:*}\$" -fuzztime 60s "${target#*:}"
+          done
