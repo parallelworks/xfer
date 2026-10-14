@@ -345,6 +345,26 @@ func shiftDest(t *testing.T, src, dst string) {
 // sender streams the large file the generator runs ahead, so both
 // directions fill their pipe buffers at once; that deadlocks if a reader
 // ever waits on a write.
+// unsafeLinks adds symlinks that stay inside the tree and one that
+// escapes it, nested so that the link's depth in the transfer matters.
+func unsafeLinks(t *testing.T, src, dst string) {
+	os.WriteFile(filepath.Join(filepath.Dir(src), "outside.txt"), []byte("outside\n"), 0o644)
+	os.MkdirAll(filepath.Join(src, "u/v"), 0o755)
+	os.Symlink("../../outside.txt", filepath.Join(src, "u/escape"))
+	os.Symlink("../../a.txt", filepath.Join(src, "u/v/inside"))
+}
+
+func checkUnsafeLinks(t *testing.T, src, dst, out string) {
+	if fi, err := os.Lstat(filepath.Join(dst, "u/escape")); err != nil || !fi.Mode().IsRegular() {
+		t.Errorf("u/escape: want a regular file, got %v %v", fi, err)
+	} else if b, _ := os.ReadFile(filepath.Join(dst, "u/escape")); string(b) != "outside\n" {
+		t.Errorf("u/escape: content %q", b)
+	}
+	if target, err := os.Readlink(filepath.Join(dst, "u/v/inside")); err != nil || target != "../../a.txt" {
+		t.Errorf("u/v/inside: want symlink to ../../a.txt, got %q %v", target, err)
+	}
+}
+
 func manyFiles(t *testing.T, src, dst string) {
 	big := make([]byte, 24<<20)
 	rand.NewChaCha8([32]byte{1}).Read(big)
@@ -388,6 +408,7 @@ var scenarios = []scenario{
 	{name: "lz4", needs: "lz4", opts: []string{"-a", "--compress-choice=lz4", "--no-W"}, prepare: staleDest, times: true, minProto: 31,
 		check: checkIgnoring("extra-file", "extra-dir", "extra-dir/sub", "extra-dir/sub/x")},
 	{name: "many-files", opts: []string{"-a"}, prepare: manyFiles, times: true},
+	{name: "copy-unsafe-links", opts: []string{"-a", "--copy-unsafe-links"}, prepare: unsafeLinks, check: checkUnsafeLinks},
 	{name: "no-inc-recursive", opts: []string{"-a", "--no-inc-recursive", "--delete", "--no-W"}, prepare: staleDest, times: true, perms: true},
 	{name: "protect-args", opts: []string{"-a", "-s"}, times: true},
 }

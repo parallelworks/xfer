@@ -77,8 +77,9 @@ func (sc *scanner) ioError(bits int32, format string, args ...any) {
 	sc.s.sendError(format, args...)
 }
 
-// stat returns the attributes the sender uses for p.
-func (sc *scanner) stat(p string, top bool) (fs.FileInfo, error) {
+// stat returns the attributes the sender uses for p, whose name in the
+// transfer is name.
+func (sc *scanner) stat(p, name string, top bool) (fs.FileInfo, error) {
 	fi, err := os.Lstat(p)
 	if err != nil || fi.Mode()&fs.ModeSymlink == 0 {
 		return fi, err
@@ -91,7 +92,7 @@ func (sc *scanner) stat(p string, top bool) (fs.FileInfo, error) {
 	}
 	if !follow && sc.o.CopyUnsafeLinks {
 		target, err := os.Readlink(p)
-		if err == nil && unsafeLink(target, p) {
+		if err == nil && unsafeLink(target, name) {
 			follow = true
 		}
 	}
@@ -156,7 +157,7 @@ func (sc *scanner) addArg(arg string) {
 	}
 
 	p := filepath.Join(fsDir, name)
-	fi, err := sc.stat(p, true)
+	fi, err := sc.stat(p, name, true)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			sc.ioError(ioErrGeneral, "link_stat %q failed: No such file or directory (2)", absPath(p))
@@ -314,7 +315,7 @@ func (sc *scanner) walkDir(p, dir string) (leave func()) {
 		if dir != "." {
 			name = dir + "/" + base
 		}
-		fi, err := sc.stat(childPath, false)
+		fi, err := sc.stat(childPath, name, false)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				// Vanished between readdir and stat.
