@@ -205,3 +205,25 @@ func (a *inplaceApply) Match(i int, _ []byte) error {
 	a.write(blk)
 	return nil
 }
+
+type discard struct{}
+
+func (discard) Literal([]byte) error    { return nil }
+func (discard) Match(int, []byte) error { return nil }
+
+// TestMatchBoundedBuffer checks that matching a long, mostly matching file
+// keeps the read buffer at its initial size.
+func TestMatchBoundedBuffer(t *testing.T) {
+	r := rand.New(rand.NewPCG(5, 5))
+	basis := randBytes(r, 16<<20)
+	target := append([]byte(nil), basis...)
+	copy(target[8<<20:], randBytes(r, 1<<20))
+	s, _ := Generate(bytes.NewReader(basis), int64(len(basis)), 8192, 16, md5Strong)
+	m := matcher{r: bytes.NewReader(target), s: s, strong: md5Strong, e: discard{}}
+	if err := m.run(); err != nil {
+		t.Fatal(err)
+	}
+	if limit := 8192 + maxPending + 2*readSize; cap(m.buf) > limit {
+		t.Errorf("buffer grew to %d bytes, want at most %d", cap(m.buf), limit)
+	}
+}

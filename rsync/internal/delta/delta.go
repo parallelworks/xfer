@@ -201,6 +201,7 @@ func (m *matcher) fill(need int) error {
 				m.buf = m.buf[:n]
 				m.base += int64(m.lit)
 				m.pos -= m.lit
+				need -= m.lit
 				m.lit = 0
 			}
 			if cap(m.buf)-len(m.buf) < readSize {
@@ -209,7 +210,9 @@ func (m *matcher) fill(need int) error {
 				m.buf = nb
 			}
 		}
-		n, err := m.r.Read(m.buf[len(m.buf):cap(m.buf)])
+		// Read at most readSize so the lookahead stays bounded and
+		// compaction above always makes room without growing the buffer.
+		n, err := m.r.Read(m.buf[len(m.buf) : len(m.buf)+readSize])
 		m.buf = m.buf[:len(m.buf)+n]
 		if err == io.EOF {
 			m.eof = true

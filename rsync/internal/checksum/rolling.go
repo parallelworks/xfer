@@ -13,6 +13,17 @@ func Rolling(p []byte) uint32 {
 }
 
 func rollingParts(p []byte) (s1, s2 uint32) {
+	if n := rollingVec(p); n > 0 {
+		var w uint32
+		s1, s2, w = rollingBlocks(p[:n])
+		s2 = s2*32 + w
+		p = p[n:]
+	}
+	return rollingTail(p, s1, s2)
+}
+
+// rollingTail continues the sums over p.
+func rollingTail(p []byte, s1, s2 uint32) (uint32, uint32) {
 	n := len(p)
 	i := 0
 	for ; i+4 < n; i += 4 {

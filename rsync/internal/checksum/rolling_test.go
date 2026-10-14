@@ -77,3 +77,35 @@ func TestMD4OldFileSumKeepsSeedAcrossReset(t *testing.T) {
 		t.Errorf("file sum = %s", got)
 	}
 }
+
+// TestRollingVector checks the vectorized path against the scalar sums for
+// lengths around the chunk boundaries and extreme byte values.
+func TestRollingVector(t *testing.T) {
+	r := rand.New(rand.NewPCG(3, 4))
+	for n := 0; n < 1500; n++ {
+		p := make([]byte, n)
+		for i := range p {
+			switch r.IntN(4) {
+			case 0:
+				p[i] = 0x80
+			case 1:
+				p[i] = 0x7f
+			default:
+				p[i] = byte(r.Uint32())
+			}
+		}
+		s1, s2 := rollingParts(p)
+		w1, w2 := rollingTail(p, 0, 0)
+		if s1 != w1 || s2 != w2 {
+			t.Fatalf("len %d: got %#x %#x, want %#x %#x", n, s1, s2, w1, w2)
+		}
+	}
+	big := make([]byte, 1<<20)
+	for i := range big {
+		big[i] = 0x80 // the most negative byte, to exercise wraparound
+	}
+	s1, s2 := rollingParts(big)
+	if w1, w2 := rollingTail(big, 0, 0); s1 != w1 || s2 != w2 {
+		t.Fatalf("1MB: got %#x %#x, want %#x %#x", s1, s2, w1, w2)
+	}
+}

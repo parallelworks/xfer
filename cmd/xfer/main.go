@@ -51,7 +51,10 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	os.Exit(rsync.Main(ctx, args, rsync.Stdio{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}))
+	stopProfile := startProfile()
+	code := rsync.Main(ctx, args, rsync.Stdio{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr})
+	stopProfile()
+	os.Exit(code)
 }
 
 func usage() {

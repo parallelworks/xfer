@@ -37,8 +37,8 @@ type receiving struct {
 	byName  map[string]int // active entries by name, for deletion
 	filters *filter.List
 
-	root   *os.Root // destination; nil in a dry run whose destination does not exist
-	single string   // when copying one file onto a file name: that name
+	root   *dtree // destination; nil in a dry run whose destination does not exist
+	single string // when copying one file onto a file name: that name
 	umask  uint32
 
 	// ids maps the sender's uids and gids to ours.
@@ -137,7 +137,7 @@ func (rv *receiving) openDest(dest string) error {
 			}
 			return exitErrorf(ExitFileIO, "change_dir#3 %q failed: %s", absPath(dir), errnoText(err))
 		}
-		rv.root = root
+		rv.root = newDtree(root)
 		return nil
 	}
 	if exists && !fi.IsDir() {
@@ -162,7 +162,7 @@ func (rv *receiving) openDest(dest string) error {
 	if err != nil {
 		return exitErrorf(ExitFileIO, "change_dir#3 %q failed: %s", absPath(dest), errnoText(err))
 	}
-	rv.root = root
+	rv.root = newDtree(root)
 	return nil
 }
 

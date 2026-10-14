@@ -100,12 +100,17 @@ func isRoot() bool { return os.Geteuid() == 0 }
 // withParent opens the directory containing name inside root and calls fn
 // with its descriptor and name's base name. It lets us use *at system
 // calls that os.Root does not offer while staying inside the root.
-func withParent(root *os.Root, name string, fn func(dirfd int, base string) error) error {
-	dir, base := path.Split(name)
-	if dir == "" {
-		dir = "."
+func withParent(root *dtree, name string, fn func(dirfd int, base string) error) error {
+	r, base, done := root.at(name)
+	defer done()
+	dir := "."
+	if r == root.root {
+		dir, base = path.Split(name)
+		if dir == "" {
+			dir = "."
+		}
 	}
-	d, err := root.Open(dir)
+	d, err := r.Open(dir)
 	if err != nil {
 		return err
 	}
@@ -115,7 +120,7 @@ func withParent(root *os.Root, name string, fn func(dirfd int, base string) erro
 
 // lchtimes sets the modification time of name without following a final
 // symlink.
-func lchtimes(root *os.Root, name string, mtime time.Time) error {
+func lchtimes(root *dtree, name string, mtime time.Time) error {
 	return withParent(root, name, func(dirfd int, base string) error {
 		now := unix.NsecToTimespec(time.Now().UnixNano())
 		ts := []unix.Timespec{now, unix.NsecToTimespec(mtime.UnixNano())}
@@ -125,7 +130,7 @@ func lchtimes(root *os.Root, name string, mtime time.Time) error {
 
 // mknod creates a device or special file. The path is resolved by name
 // below the root's directory; os.Root has no mknod.
-func mknod(root *os.Root, name string, f *flist.File) error {
+func mknod(root *dtree, name string, f *flist.File) error {
 	if err := checkInRoot(root, name); err != nil {
 		return err
 	}
@@ -146,7 +151,7 @@ func mknod(root *os.Root, name string, f *flist.File) error {
 
 // checkInRoot verifies that the parent directory of name resolves inside
 // root, so that path-based calls cannot be redirected by symlinks.
-func checkInRoot(root *os.Root, name string) error {
+func checkInRoot(root *dtree, name string) error {
 	dir := path.Dir(name)
 	fi, err := root.Stat(dir)
 	if err != nil {
