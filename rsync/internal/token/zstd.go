@@ -44,14 +44,43 @@ import (
 
 type zstdEnc struct {
 	sink recordSink
+	out  zstdOut
 	enc  *zstd.Encoder
 	err  error
 }
 
+// zstdOut collects the encoder's output. The encoder runs a pipeline: one
+// goroutine finds matches while another entropy-codes the previous block
+// and writes it here, so the output is handed to the wire only from the
+// goroutine that owns it.
+type zstdOut struct {
+	mu  sync.Mutex
+	buf []byte
+}
+
+func (o *zstdOut) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	o.buf = append(o.buf, p...)
+	o.mu.Unlock()
+	return len(p), nil
+}
+
+// drain moves the collected output to the sink, which emits full records.
+func (z *zstdEnc) drain() error {
+	z.out.mu.Lock()
+	defer z.out.mu.Unlock()
+	if len(z.out.buf) == 0 {
+		return nil
+	}
+	_, err := z.sink.Write(z.out.buf)
+	z.out.buf = z.out.buf[:0]
+	return err
+}
+
 func newZstdEnc(w *wire.Writer, level int) *zstdEnc {
 	z := &zstdEnc{sink: recordSink{w: w}}
-	z.enc, z.err = zstd.NewWriter(&z.sink,
-		zstd.WithEncoderConcurrency(1),
+	z.enc, z.err = zstd.NewWriter(&z.out,
+		zstd.WithEncoderConcurrency(2),
 		zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(level)),
 		zstd.WithWindowSize(8<<20),
 		zstd.WithEncoderCRC(false),
@@ -64,8 +93,10 @@ func (z *zstdEnc) write(p []byte) error {
 	if z.err != nil {
 		return z.err
 	}
-	_, err := z.enc.Write(p)
-	return err
+	if _, err := z.enc.Write(p); err != nil {
+		return err
+	}
+	return z.drain()
 }
 
 func (z *zstdEnc) flush() error {
@@ -73,6 +104,9 @@ func (z *zstdEnc) flush() error {
 		return z.err
 	}
 	if err := z.enc.Flush(); err != nil {
+		return err
+	}
+	if err := z.drain(); err != nil {
 		return err
 	}
 	z.sink.emitAll(0)
