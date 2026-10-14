@@ -1179,7 +1179,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr tok
 
 	fileHash.Reset()
 	var bw *bufio.Writer
-	ow := &offsetWriter{f: tmp}
+	ow := &offsetWriter{f: tmp, sparse: o.Sparse && !inplace}
 	if tmp != nil {
 		if rv.bw == nil {
 			rv.bw = bufio.NewWriterSize(ow, 256<<10)
@@ -1269,7 +1269,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr tok
 	if writeErr == nil {
 		writeErr = bw.Flush()
 	}
-	if writeErr == nil && inplace {
+	if writeErr == nil && (inplace || ow.sparse) {
 		writeErr = tmp.Truncate(ow.off)
 	}
 	if writeErr == nil && o.Fsync {
@@ -1475,16 +1475,62 @@ func (rv *receiving) deletedStats() [5]int32 {
 }
 
 // offsetWriter writes sequentially at off, leaving earlier and later file
-// contents in place (an --inplace update reads its basis from them).
+// contents in place (an --inplace update reads its basis from them). With
+// sparse set it writes into a new file and skips blocks of zeros, leaving
+// holes; the file must be truncated to off at the end.
 type offsetWriter struct {
-	f   *os.File
-	off int64
+	f      *os.File
+	off    int64
+	sparse bool
 }
 
+const sparseBlock = 4096
+
 func (w *offsetWriter) Write(p []byte) (int, error) {
-	n, err := w.f.WriteAt(p, w.off)
-	w.off += int64(n)
-	return n, err
+	if !w.sparse {
+		n, err := w.f.WriteAt(p, w.off)
+		w.off += int64(n)
+		return n, err
+	}
+	total := len(p)
+	for len(p) > 0 {
+		// Up to the next block boundary, so holes are block-aligned.
+		n := min(len(p), sparseBlock-int(w.off%sparseBlock))
+		if allZero(p[:n]) {
+			w.off += int64(n)
+			p = p[n:]
+			continue
+		}
+		// Write the run of blocks up to the next block of zeros.
+		for n < len(p) {
+			m := min(len(p)-n, sparseBlock)
+			if allZero(p[n : n+m]) {
+				break
+			}
+			n += m
+		}
+		if _, err := w.f.WriteAt(p[:n], w.off); err != nil {
+			return total - len(p), err
+		}
+		w.off += int64(n)
+		p = p[n:]
+	}
+	return total, nil
+}
+
+func allZero(p []byte) bool {
+	for len(p) >= 8 {
+		if p[0]|p[1]|p[2]|p[3]|p[4]|p[5]|p[6]|p[7] != 0 {
+			return false
+		}
+		p = p[8:]
+	}
+	for _, b := range p {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // partialPath is where --partial-dir keeps an interrupted transfer of

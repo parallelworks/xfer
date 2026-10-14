@@ -365,6 +365,39 @@ func checkUnsafeLinks(t *testing.T, src, dst, out string) {
 	}
 }
 
+// sparseFile adds a file that is mostly holes.
+func sparseFile(t *testing.T, src, dst string) {
+	f, err := os.Create(filepath.Join(src, "sparse.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := bytes.Repeat([]byte("data"), 1<<18)
+	f.Write(data)
+	f.WriteAt(data, 9<<20)
+	f.Truncate(16 << 20)
+	f.Close()
+}
+
+func checkSparse(t *testing.T, src, dst, out string) {
+	if d := diffSnapshots(snapshot(t, src, true, false), snapshot(t, dst, true, false)); d != "" {
+		t.Errorf("destination differs:\n%s", d)
+	}
+	used := func(p string) (int64, int64) {
+		fi, err := os.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return int64(fi.Sys().(*syscall.Stat_t).Blocks) * 512, fi.Size()
+	}
+	if u, size := used(filepath.Join(src, "sparse.bin")); u > size/2 {
+		t.Log("the file system does not keep holes; not checking sparseness")
+		return
+	}
+	if u, size := used(filepath.Join(dst, "sparse.bin")); u > size/2 {
+		t.Errorf("sparse.bin uses %d bytes of %d: not sparse", u, size)
+	}
+}
+
 func manyFiles(t *testing.T, src, dst string) {
 	big := make([]byte, 24<<20)
 	rand.NewChaCha8([32]byte{1}).Read(big)
@@ -408,6 +441,7 @@ var scenarios = []scenario{
 	{name: "lz4", needs: "lz4", opts: []string{"-a", "--compress-choice=lz4", "--no-W"}, prepare: staleDest, times: true, minProto: 31,
 		check: checkIgnoring("extra-file", "extra-dir", "extra-dir/sub", "extra-dir/sub/x")},
 	{name: "many-files", opts: []string{"-a"}, prepare: manyFiles, times: true},
+	{name: "sparse", opts: []string{"-a", "-S"}, prepare: sparseFile, check: checkSparse},
 	{name: "timeout", opts: []string{"-a", "--timeout=1", "--delete", "--no-W"}, prepare: staleDest, times: true},
 	{name: "copy-unsafe-links", opts: []string{"-a", "--copy-unsafe-links"}, prepare: unsafeLinks, check: checkUnsafeLinks},
 	{name: "no-inc-recursive", opts: []string{"-a", "--no-inc-recursive", "--delete", "--no-W"}, prepare: staleDest, times: true, perms: true},
@@ -499,7 +533,7 @@ func TestInterop(t *testing.T) {
 					if pr.client.name == "openrsync" || pr.server.name == "openrsync" {
 						if slices.ContainsFunc(sc.opts, func(o string) bool {
 							return strings.HasPrefix(o, "--compress-choice") || strings.HasPrefix(o, "--checksum-choice") ||
-								o == "-s" || o == "--inplace" || o == "--delete-after" || o == "--no-inc-recursive" || strings.HasPrefix(o, "--protocol")
+								o == "-s" || o == "--inplace" || o == "--delete-after" || o == "--no-inc-recursive" || o == "--copy-unsafe-links" || strings.HasPrefix(o, "--protocol")
 						}) {
 							t.Skip("not supported by openrsync")
 						}
