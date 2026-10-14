@@ -213,6 +213,16 @@ func (o *Out) sendMsgLocked(tag byte, payload []byte) error {
 	return nil
 }
 
+// TrySendMsg sends a message unless another goroutine is writing, and
+// reports whether it did.
+func (o *Out) TrySendMsg(tag byte, payload []byte) bool {
+	if !o.Mux.Enabled() || !o.mu.TryLock() {
+		return false
+	}
+	defer o.mu.Unlock()
+	return o.sendMsgLocked(tag, payload) == nil
+}
+
 // SendMsgInt sends a message whose payload is a little-endian int32.
 func (o *Out) SendMsgInt(tag byte, v int32) error {
 	return o.SendMsg(tag, binary.LittleEndian.AppendUint32(nil, uint32(v)))

@@ -151,7 +151,12 @@ func (c *Client) Run(ctx context.Context, o *Options, operands []string) (*Stats
 
 	s := newSession(o, conn, false, push, log)
 	s.localTransfer = local
-	err := s.runClient(conn, srcs, dest, push)
+	err := s.runTimed(func() error { return s.runClient(conn, srcs, dest, push) })
+	if s.timedOut.Load() {
+		conn.Close()
+		c.wait(conn, serverDone)
+		return &s.stats, err
+	}
 	waitErr := c.wait(conn, serverDone)
 	stats := &s.stats
 	stats.BytesSent, stats.BytesReceived = s.counter.written.Load(), s.counter.read.Load()

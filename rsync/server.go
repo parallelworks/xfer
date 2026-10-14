@@ -71,7 +71,10 @@ func serve(ctx context.Context, args []string, conn io.ReadWriter, stderr io.Wri
 	})
 	defer stop()
 
-	err = s.runServer(clientInfo, operands)
+	err = s.runTimed(func() error { return s.runServer(clientInfo, operands) })
+	if s.timedOut.Load() {
+		return err
+	}
 	if err != nil {
 		s.fatal(err)
 		return err
@@ -573,6 +576,8 @@ func codeText(code int) string {
 		return "the --max-delete limit stopped deletions"
 	case ExitTimeout:
 		return "timeout in data send/receive"
+	case ExitConTimeout:
+		return "timeout waiting for daemon connection"
 	case ExitSignal:
 		return "received SIGINT, SIGTERM, or SIGHUP"
 	}

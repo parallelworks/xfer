@@ -28,6 +28,7 @@ const (
 	ExitVanished      = 24 // partial transfer due to vanished source files
 	ExitDeleteLimit   = 25 // the --max-delete limit stopped deletions
 	ExitTimeout       = 30 // timeout in data send/receive
+	ExitConTimeout    = 35 // timeout waiting for the connection
 	ExitRemoteCommand = 255
 )
 

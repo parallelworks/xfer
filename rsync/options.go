@@ -98,7 +98,8 @@ type Options struct {
 	Rsh           string // -e
 	RsyncPath     string // --rsync-path
 	ProtectArgs   bool   // -s
-	Timeout       time.Duration
+	Timeout       time.Duration // --timeout: give up after this long without I/O
+	ConTimeout    time.Duration // --contimeout: give up if the remote rsync has not started by then
 	BWLimit       int64 // bytes per second; 0 is unlimited
 	Protocol      int   // --protocol; 0 is the newest supported
 	ChecksumSeed  int32

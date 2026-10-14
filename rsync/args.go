@@ -97,8 +97,6 @@ var optionTable = []option{
 		return nil
 	}},
 	boolOpt("recursive", 'r', func(o *Options) *bool { return &o.Recursive }),
-	ignored("inc-recursive", 0, argNone),
-	ignored("i-r", 0, argNone),
 	boolOpt("dirs", 'd', func(o *Options) *bool { return &o.Dirs }),
 	boolOpt("perms", 'p', func(o *Options) *bool { return &o.Perms }),
 	boolOpt("executability", 'E', func(o *Options) *bool { return &o.Executability }),
@@ -344,7 +342,14 @@ var optionTable = []option{
 		o.Timeout = time.Duration(n) * time.Second
 		return nil
 	}, unset: func(o *Options) { o.Timeout = 0 }},
-	ignored("contimeout", 0, argString),
+	{long: []string{"contimeout"}, arg: argString, set: func(o *Options, v string) error {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return usagef("invalid --contimeout value %q", v)
+		}
+		o.ConTimeout = time.Duration(n) * time.Second
+		return nil
+	}, unset: func(o *Options) { o.ConTimeout = 0 }},
 	boolOpt("fsync", 0, func(o *Options) *bool { return &o.Fsync }),
 	unsupported("stop-after", 0, argString),
 	unsupported("stop-at", 0, argString),

@@ -37,20 +37,30 @@ type Stats struct {
 }
 
 // countingConn counts bytes crossing a connection.
+// It also records when a read or write started blocking and when the last
+// write ended, for --timeout.
 type countingConn struct {
 	rw      io.ReadWriter
 	read    atomic.Int64
 	written atomic.Int64
+
+	readSince, writeSince atomic.Int64 // UnixNano a call began, 0 when none is in progress
+	lastWrite             atomic.Int64 // UnixNano the last write ended
 }
 
 func (c *countingConn) Read(p []byte) (int, error) {
+	c.readSince.Store(time.Now().UnixNano())
 	n, err := c.rw.Read(p)
+	c.readSince.Store(0)
 	c.read.Add(int64(n))
 	return n, err
 }
 
 func (c *countingConn) Write(p []byte) (int, error) {
+	c.writeSince.Store(time.Now().UnixNano())
 	n, err := c.rw.Write(p)
+	c.lastWrite.Store(time.Now().UnixNano())
+	c.writeSince.Store(0)
 	c.written.Add(int64(n))
 	return n, err
 }

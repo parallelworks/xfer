@@ -115,10 +115,14 @@ type session struct {
 
 	peerStats struct{ read, written int64 }
 
-	ioErr      atomic.Int32 // ioErr* bits, set by more than one goroutine
-	stats      Stats
-	exitCode   int // non-fatal outcome, e.g. 23 for partial transfers
-	peerExited bool
+	ioErr       atomic.Int32 // ioErr* bits, set by more than one goroutine
+	keepalive   atomic.Bool  // the peer accepts MSG_NOOP on our output
+	started     atomic.Bool  // the protocol setup is done
+	timedOut    atomic.Bool  // --timeout or --contimeout expired
+	conTimedOut atomic.Bool  // --contimeout expired
+	stats       Stats
+	exitCode    int // non-fatal outcome, e.g. 23 for partial transfers
+	peerExited  bool
 }
 
 func newSession(opts *Options, raw io.ReadWriter, server, sender bool, log *logger) *session {
@@ -220,6 +224,9 @@ func (s *session) handshake(clientInfo string) error {
 	if !s.server || s.proto >= 30 {
 		s.demux.Enable()
 	}
+	// Peers of protocol 30 and later accept MSG_NOOP as a keep-alive.
+	s.keepalive.Store(s.proto >= 30 && s.out.Mux.Enabled())
+	s.started.Store(true)
 	return nil
 }
 

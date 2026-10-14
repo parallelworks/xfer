@@ -153,3 +153,29 @@ func TestPartial(t *testing.T) {
 		})
 	}
 }
+
+// TestTimeout runs against a remote shell whose server never answers.
+func TestTimeout(t *testing.T) {
+	dir := t.TempDir()
+	shell := filepath.Join(dir, "hang")
+	os.WriteFile(shell, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755)
+	start := time.Now()
+	code, _, stderr := runMain(t, "-a", "--timeout=1", "-e", shell, dir+"/", "host:"+dir+"/dst/")
+	if code != 30 || !strings.Contains(stderr, "io timeout after 1 seconds") {
+		t.Errorf("exit %d, stderr:\n%s", code, stderr)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("took %v", d)
+	}
+}
+
+// TestConTimeout runs against a remote shell that never starts rsync.
+func TestConTimeout(t *testing.T) {
+	dir := t.TempDir()
+	shell := filepath.Join(dir, "hang")
+	os.WriteFile(shell, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755)
+	code, _, stderr := runMain(t, "-a", "--contimeout=1", "-e", shell, dir+"/", "host:"+dir+"/dst/")
+	if code != 35 {
+		t.Errorf("exit %d, stderr:\n%s", code, stderr)
+	}
+}

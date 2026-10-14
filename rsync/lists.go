@@ -36,7 +36,6 @@ type fileLists struct {
 	inc bool
 
 	mu    sync.Mutex
-	cond  sync.Cond
 	lists []*fileList   // unfreed lists, oldest first
 	dirs  []*flist.File // every directory of every list, the protocol's dir_flist
 	total int           // entries in all lists ever added
@@ -54,7 +53,6 @@ func newFileLists(inc bool) *fileLists {
 	if inc {
 		fl.next = 1
 	}
-	fl.cond.L = &fl.mu
 	return fl
 }
 
@@ -77,7 +75,6 @@ func (fl *fileLists) add(files []*flist.File, parent int32) *fileList {
 	fl.byNum[fl.added] = l
 	fl.added++
 	fl.total += len(files)
-	fl.cond.Broadcast()
 	fl.poke()
 	return l
 }
@@ -93,7 +90,6 @@ func (fl *fileLists) poke() {
 func (fl *fileLists) setEOF() {
 	fl.mu.Lock()
 	fl.eof = true
-	fl.cond.Broadcast()
 	fl.mu.Unlock()
 	fl.poke()
 }
@@ -114,21 +110,6 @@ func (fl *fileLists) done() bool {
 	fl.mu.Lock()
 	defer fl.mu.Unlock()
 	return fl.eof
-}
-
-// wait returns the list with sequence number n (0 for the first list),
-// waiting for it to arrive, or nil once no more lists will come. The list
-// must not have been freed.
-func (fl *fileLists) wait(n int) *fileList {
-	fl.mu.Lock()
-	defer fl.mu.Unlock()
-	for n >= fl.added && !fl.eof {
-		fl.cond.Wait()
-	}
-	if n >= fl.added {
-		return nil
-	}
-	return fl.byNum[n]
 }
 
 // list returns the list with sequence number n if it has arrived.
@@ -178,16 +159,6 @@ func (fl *fileLists) numDirs() int {
 	return len(fl.dirs)
 }
 
-// oldest returns the oldest unfreed list, or nil.
-func (fl *fileLists) oldest() *fileList {
-	fl.mu.Lock()
-	defer fl.mu.Unlock()
-	if len(fl.lists) == 0 {
-		return nil
-	}
-	return fl.lists[0]
-}
-
 // freeOldest drops the oldest unfreed list and reports how many remain.
 func (fl *fileLists) freeOldest() int {
 	fl.mu.Lock()
@@ -218,15 +189,4 @@ func (fl *fileLists) entriesAfterOldest() int {
 		n += len(fl.lists[i].files)
 	}
 	return n
-}
-
-// all returns every entry of every unfreed list, in index order.
-func (fl *fileLists) all() []*flist.File {
-	fl.mu.Lock()
-	defer fl.mu.Unlock()
-	var out []*flist.File
-	for _, l := range fl.lists {
-		out = append(out, l.files...)
-	}
-	return out
 }
