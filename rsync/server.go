@@ -657,7 +657,7 @@ func summaryOnly(err error) bool {
 var Version = "0.1.0-dev"
 
 const usage = `xfer rsync: a fast, versatile, remote (and local) file-copying tool,
-compatible with rsync protocol versions 27 to 31.
+compatible with rsync protocol versions 27 to 33.
 
 Usage: rsync [OPTION]... SRC [SRC]... DEST
   or   rsync [OPTION]... SRC [SRC]... [USER@]HOST:DEST
