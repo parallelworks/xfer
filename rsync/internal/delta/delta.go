@@ -85,10 +85,10 @@ type Emitter interface {
 }
 
 const (
-	readSize = 256 << 10
+	readSize = 64 << 10
 	// maxPending bounds how much unmatched data is buffered before it is
 	// handed to the emitter as a literal.
-	maxPending = 256 << 10
+	maxPending = 64 << 10
 )
 
 // index is an open hash of weak checksums to block numbers.

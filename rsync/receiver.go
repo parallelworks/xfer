@@ -653,7 +653,7 @@ func (rv *receiving) makeSums(file *os.File, size int64, redo bool) (sumHead, []
 	s := rv.s
 	blen, s2len := sumSizes(size, rv.o.BlockSize, s.proto, s.xferSum.Size(), redo)
 	block := checksum.NewBlock(s.xferSum, s.seed, s.seedFirst)
-	sums, err := delta.Generate(bufio.NewReaderSize(file, 256<<10), size, blen, s2len, block.Sum)
+	sums, err := delta.Generate(bufio.NewReaderSize(file, 64<<10), size, blen, s2len, block.Sum)
 	if err != nil {
 		return sumHead{}, nil, err
 	}
@@ -1392,7 +1392,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr tok
 	}
 	if tmp != nil {
 		if rv.bw == nil {
-			rv.bw = bufio.NewWriterSize(ow, 256<<10)
+			rv.bw = bufio.NewWriterSize(ow, 64<<10)
 		}
 		bw = rv.bw
 		bw.Reset(ow)

@@ -124,7 +124,7 @@ func (d *Demux) Consumed() int64 { return d.consumed.Load() }
 
 // NewDemux returns a Demux over r, initially not multiplexed.
 func NewDemux(r io.Reader) *Demux {
-	return &Demux{r: bufio.NewReaderSize(r, 256<<10)}
+	return &Demux{r: bufio.NewReaderSize(r, 64<<10)}
 }
 
 // Enable starts demultiplexing.
