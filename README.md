@@ -144,6 +144,13 @@ transport (SSH). In FIPS mode xfer:
   3.2.0, openrsync, or protocol 29 and older) fail with a clear error
   instead of silently falling back.
 
+The SSH layer has to be FIPS-compatible too. In FIPS 140-only mode Go
+refuses `x/crypto/ssh`'s default X25519 key exchange and its GCM ciphers,
+so an embedder using `sshtransport` there should set the client's
+`ssh.Config` to approved algorithms, for example key exchange
+`ecdh-sha2-nistp256`, cipher `aes128-ctr` and MAC
+`hmac-sha2-256-etm@openssh.com`, as the `sshtransport` tests do.
+
 `TestFIPS` checks the refusal, and the full suite runs with
 `GODEBUG=fips140=only`, where Go panics on any use of a non-approved
 algorithm.

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/fips140"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -185,9 +186,23 @@ func (s *testServer) session(ctx context.Context, ch ssh.Channel, reqs <-chan *s
 	ch.Close()
 }
 
+// algorithms limits SSH to approved algorithms in FIPS 140-only mode, in
+// which Go refuses the default X25519 key exchange.
+func algorithms() ssh.Config {
+	if !fips140.Enabled() {
+		return ssh.Config{}
+	}
+	return ssh.Config{
+		KeyExchanges: []string{"ecdh-sha2-nistp256"},
+		Ciphers:      []string{"aes128-ctr"},
+		MACs:         []string{"hmac-sha2-256-etm@openssh.com"},
+	}
+}
+
 func (s *testServer) dial(t *testing.T, auth ssh.AuthMethod) *ssh.Client {
 	t.Helper()
 	c, err := ssh.Dial("tcp", s.addr, &ssh.ClientConfig{
+		Config:          algorithms(),
 		User:            testUser,
 		Auth:            []ssh.AuthMethod{auth},
 		HostKeyCallback: ssh.FixedHostKey(s.hostKey),
