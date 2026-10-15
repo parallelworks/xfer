@@ -5,8 +5,8 @@
 
 Every row runs push and pull over a fake remote shell (the "remote" side is
 started through sh on the same machine), RUNS times each, and reports the
-median wall time and the peak RSS of the larger of the client and server
-processes (measured with GNU time when it is installed). Run it on Linux with GNU rsync installed
+median wall time, plus the peak RSS of the largest single process (client
+or server) from one extra run sampled through /proc. Run it on Linux with GNU rsync installed
 (on Alpine: apk add rsync python3):
 
     python3 bench/bench.py --xfer ./xfer --dir /mem/bench [--runs 5] [--only ROW]
@@ -29,19 +29,56 @@ import shutil
 import statistics
 import subprocess
 import sys
+import time
 
-# MEASURE runs a command and reports its wall time. Its peak-RSS figure is
-# only a fallback: Linux carries a parent's high-water mark across exec, so
-# a child of Python never reports less than Python's own footprint. With
-# GNU time available (see peak_rss) each process is measured on its own.
+# MEASURE runs a command and reports its wall time.
 MEASURE = """
-import resource, subprocess, sys, time
+import subprocess, sys, time
 t = time.monotonic()
 rc = subprocess.call(sys.argv[1:], stdout=subprocess.DEVNULL)
 el = time.monotonic() - t
-print("TIME %.3f %d" % (el, resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss), file=sys.stderr)
+print("TIME %.3f" % el, file=sys.stderr)
 sys.exit(rc)
 """
+
+
+def tree_rss(root):
+    """Returns {pid: Rss KiB} for root and its descendants, skipping shells."""
+    out, todo = {}, [root]
+    while todo:
+        pid = todo.pop()
+        try:
+            with open("/proc/%d/comm" % pid) as fh:
+                comm = fh.read().strip()
+            if comm not in ("sh", "bash", "dash", "ssh", "fakessh"):
+                with open("/proc/%d/smaps_rollup" % pid) as fh:
+                    for line in fh:
+                        if line.startswith("Rss:"):
+                            out[pid] = int(line.split()[1])
+                            break
+            for tid in os.listdir("/proc/%d/task" % pid):
+                with open("/proc/%d/task/%s/children" % (pid, tid)) as fh:
+                    todo += [int(x) for x in fh.read().split()]
+        except (OSError, ValueError):
+            pass
+    return out
+
+
+def sample_rss(argv):
+    """Runs argv and returns the largest peak RSS (KiB) of any one process
+    in its tree, sampled from /proc/PID/smaps_rollup every 2 ms. The kernel's
+    own peak (VmHWM, getrusage, GNU time) is unusable on large machines: it
+    is kept in per-CPU batches, which on a 192-CPU host are 1.5 MB each."""
+    p = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    peak = {}
+    while p.poll() is None:
+        for pid, rss in tree_rss(p.pid).items():
+            peak[pid] = max(peak.get(pid, 0), rss)
+        time.sleep(0.002)
+    if p.returncode != 0:
+        sys.exit("%s failed (%d):\n%s" % (argv, p.returncode, p.stderr.read().decode()))
+    return max(peak.values(), default=0)
+
 
 ROWS = ["initial", "noop", "delta", "checksum", "compress", "delete", "many-initial", "many-noop"]
 
@@ -140,7 +177,7 @@ def ssh_setup(a, base):
     sh("rsync", "-a", "--delete", "-e", "ssh -o BatchMode=yes", os.path.join(base, "new") + "/", a.ssh + ":" + a.ssh_dir + "/new/")
 
 
-def run_ssh(a, impl, base, direction):
+def run_ssh(a, impl, base, direction, rss=False):
     """Runs the ssh-initial row once: the main tree over OpenSSH."""
     server = a.rsync_remote if impl.name == "gnu" else a.ssh_xfer + " rsync"
     shell = ["-e", "ssh -o BatchMode=yes", "--rsync-path=" + server]
@@ -152,67 +189,31 @@ def run_ssh(a, impl, base, direction):
         dst = os.path.join(base, "dst-" + impl.name)
         shutil.rmtree(dst, ignore_errors=True)
         argv = impl.client + ["-a"] + shell + [a.ssh + ":" + a.ssh_dir + "/new/", dst + "/"]
-    return measure(impl, "ssh-initial", direction, argv)
+    return measure(impl, "ssh-initial", direction, argv, rss)
 
 
-# TIME is GNU time, when installed (on Alpine: apk add time). It reports the
-# peak RSS of the one process it runs, which it starts itself, so the
-# figure does not inherit Python's. The client and the server each run
-# under it, and a row's figure is the larger of the two.
-TIME = None
-
-
-def find_time(base):
-    global TIME
-    out = os.path.join(base, ".time-check")
-    for t in ("/usr/bin/time", shutil.which("gtime") or ""):
-        if t and subprocess.call([t, "-f", "%M", "-o", out, "true"], stderr=subprocess.DEVNULL) == 0:
-            TIME = t
-            return
-
-
-def timed(argv, out):
-    """Wraps argv to record its peak RSS (KiB) in out, if GNU time exists."""
-    return [TIME, "-f", "%M", "-o", out] + argv if TIME else argv
-
-
-def peak(path):
-    try:
-        with open(path) as fh:
-            v = int(fh.read().split()[-1])
-        os.remove(path)
-        return v
-    except (OSError, ValueError, IndexError):
-        return 0
-
-
-def measure(impl, row, direction, argv, base=None):
+def measure(impl, row, direction, argv, rss=False):
+    """Returns the wall time of one run, or with rss its peak RSS."""
     sh("sync")
-    cfile = sfile = None
-    if TIME and base:
-        cfile, sfile = os.path.join(base, ".rss-client"), os.path.join(base, ".rss-server")
-        argv = timed(argv, cfile)
+    if rss:
+        return sample_rss(argv)
     r = subprocess.run([sys.executable, "-c", MEASURE] + argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     line = [l for l in r.stderr.splitlines() if l.startswith("TIME ")]
     if r.returncode != 0 or not line:
         sys.exit("%s %s %s failed (%d):\n%s" % (impl.name, row, direction, r.returncode, r.stderr))
-    _, secs, rss = line[-1].split()
-    if cfile:
-        rss = max(peak(cfile), peak(sfile))
-    return float(secs), int(rss)
+    return float(line[-1].split()[1])
 
 
-def run_once(impl, row, base, direction):
+def run_once(impl, row, base, direction, rss=False):
     dst = os.path.join(base, "dst-" + impl.name)
     prepare(row, base, dst)
     opts, src = row_args(row, base)
-    server = " ".join(timed([impl.server], os.path.join(base, ".rss-server")))
-    shell = ["-e", os.path.join(base, "fakessh"), "--rsync-path=" + server]
+    shell = ["-e", os.path.join(base, "fakessh"), "--rsync-path=" + impl.server]
     if direction == "push":
         argv = impl.client + opts + shell + [src, "host:" + dst + "/"]
     else:
         argv = impl.client + opts + shell + ["host:" + src, dst + "/"]
-    return measure(impl, row, direction, argv, base)
+    return measure(impl, row, direction, argv, rss)
 
 
 def main():
@@ -229,14 +230,11 @@ def main():
     a = ap.parse_args()
     base = os.path.abspath(a.dir)
     setup(base)
-    find_time(base)
-    if not TIME:
-        print("GNU time not found: RSS figures include the Python parent's", file=sys.stderr)
     xfer = os.path.abspath(a.xfer)
     impls = [Impl("gnu", [a.rsync], a.rsync), Impl("xfer", [xfer, "rsync"], xfer + " rsync")]
     results = []
-    print("| row | dir | GNU s | xfer s | xfer/GNU | GNU RSS MB | xfer RSS MB |")
-    print("|---|---|---:|---:|---:|---:|---:|")
+    print("| row | dir | GNU s | xfer s | xfer/GNU | GNU RSS MB | xfer RSS MB | RSS xfer/GNU |")
+    print("|---|---|---:|---:|---:|---:|---:|---:|")
     rows = list(a.only or ROWS)
     if a.ssh and (not a.only or "ssh-initial" in a.only):
         ssh_setup(a, base)
@@ -249,13 +247,15 @@ def main():
             res = {}
             for impl in impls:
                 if row == "ssh-initial":
-                    runs = [run_ssh(a, impl, base, direction) for _ in range(a.runs)]
+                    run = lambda rss=False: run_ssh(a, impl, base, direction, rss)
                 else:
-                    runs = [run_once(impl, row, base, direction) for _ in range(a.runs)]
-                res[impl.name] = (statistics.median(t for t, _ in runs), max(m for _, m in runs))
+                    run = lambda rss=False: run_once(impl, row, base, direction, rss)
+                times = [run() for _ in range(a.runs)]
+                # One more run, sampled, for memory: sampling would skew the timing.
+                res[impl.name] = (statistics.median(times), run(rss=True))
             g, x = res["gnu"], res["xfer"]
             results.append({"row": row, "dir": direction, "gnu": g, "xfer": x})
-            print("| %s | %s | %.2f | %.2f | %.2f | %.0f | %.0f |" % (row, direction, g[0], x[0], x[0] / max(g[0], 1e-3), g[1] / 1024, x[1] / 1024), flush=True)
+            print("| %s | %s | %.2f | %.2f | %.2f | %.1f | %.1f | %.1f |" % (row, direction, g[0], x[0], x[0] / max(g[0], 1e-3), g[1] / 1024, x[1] / 1024, x[1] / max(g[1], 1)), flush=True)
     for impl in impls:
         shutil.rmtree(os.path.join(base, "dst-" + impl.name), ignore_errors=True)
     with open(os.path.join(base, "results.json"), "w") as fh:
