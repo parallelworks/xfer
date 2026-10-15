@@ -1,19 +1,46 @@
 name: release
 
+# release-please keeps a release PR open against canary. Merging it tags the
+# release and creates the GitHub release, and goreleaser then attaches the
+# binaries to it.
+
 on:
   push:
-    tags: ["v*"]
+    branches: [canary]
 
 permissions:
   contents: write
+  pull-requests: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          target-branch: canary
+
+  # A tag pushed with GITHUB_TOKEN starts no workflows, so goreleaser runs
+  # here rather than on the tag.
   goreleaser:
+    needs: release-please
+    if: needs.release-please.outputs.created == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0 # the changelog needs history and tags
+          ref: ${{ needs.release-please.outputs.tag }}
+          fetch-depth: 0
       - uses: actions/setup-go@v7
         with:
           go-version: stable

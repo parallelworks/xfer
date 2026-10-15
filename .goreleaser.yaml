@@ -37,13 +37,13 @@ checksum:
 snapshot:
   version_template: "{{ incpatch .Version }}-dev+{{ .ShortCommit }}"
 
+# release-please writes the changelog and creates the release; goreleaser
+# only adds the archives to it.
 changelog:
-  sort: asc
-  filters:
-    exclude:
-      - "^Merge "
+  disable: true
 
 release:
+  mode: append
   github:
     owner: parallelworks
     name: xfer
