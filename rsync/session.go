@@ -452,6 +452,7 @@ func le32(b []byte) uint32 {
 // sendError reports a non-fatal transfer error to the user: locally when we
 // are the client, and through the protocol when we are the server.
 func (s *session) sendError(format string, args ...any) {
+	format, args = rsyncQuote(format, args, s.log.safe)
 	msg := fmt.Sprintf(format, args...)
 	if !strings.HasSuffix(msg, "\n") {
 		msg += "\n"

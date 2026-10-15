@@ -380,7 +380,7 @@ func (s *session) sendFile(f *flist.File, req request, head sumHead, sums *delta
 }
 
 func (s *session) sendWarningVanished(f *flist.File) {
-	msg := fmt.Sprintf("file has vanished: %q\n", absPath(f.Source))
+	msg := "file has vanished: \"" + s.log.safe(absPath(f.Source)) + "\"\n"
 	if s.server && s.out.Mux.Enabled() {
 		tag := byte(wire.MsgWarning)
 		if s.proto < 30 {

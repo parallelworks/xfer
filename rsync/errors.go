@@ -8,6 +8,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 )
 
 // Exit codes, as documented by rsync.
@@ -76,7 +78,55 @@ func ExitCode(err error) int {
 }
 
 func exitErrorf(code int, format string, args ...any) error {
+	format, args = rsyncQuote(format, args, escapeName)
 	return &ExitError{Code: code, Err: fmt.Errorf(format, args...)}
+}
+
+// rsyncQuote rewrites the %q verbs of format, which quote names, to quote
+// them as rsync does: in plain double quotes, with the characters that
+// safe escapes written as \#ooo. Go's %q would escape backslashes, quotes
+// and non-ASCII characters instead.
+func rsyncQuote(format string, args []any, safe func(string) string) (string, []any) {
+	if !strings.Contains(format, "%q") {
+		return format, args
+	}
+	var b strings.Builder
+	out := slices.Clone(args)
+	n := 0 // the argument the next verb takes
+	for i := 0; i < len(format); i++ {
+		c := format[i]
+		b.WriteByte(c)
+		if c != '%' || i+1 == len(format) {
+			continue
+		}
+		i++
+		if format[i] == '%' {
+			b.WriteByte('%')
+			continue
+		}
+		for i+1 < len(format) && strings.IndexByte("+-# 0123456789.", format[i]) >= 0 {
+			b.WriteByte(format[i]) // flags, width and precision
+			i++
+		}
+		var name string
+		ok := false
+		if n < len(out) {
+			name, ok = out[n].(string)
+		}
+		if format[i] == 'q' && ok {
+			out[n] = `"` + safe(name) + `"`
+			b.WriteByte('s')
+		} else {
+			b.WriteByte(format[i])
+		}
+		n++
+	}
+	return b.String(), out
+}
+
+// escapeName escapes a name for messages where no output options apply.
+func escapeName(name string) string {
+	return (&logger{opts: &Options{}}).safe(name)
 }
 
 // codeForIOError maps accumulated I/O error bits to an exit code.

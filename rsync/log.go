@@ -115,6 +115,7 @@ func (l *logger) print(s string) {
 }
 
 func (l *logger) errorf(format string, args ...any) {
+	format, args = rsyncQuote(format, args, l.safe)
 	msg := fmt.Sprintf(format, args...)
 	if !strings.HasPrefix(msg, "rsync") {
 		msg = "rsync: " + msg
