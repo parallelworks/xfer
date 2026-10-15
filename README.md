@@ -205,31 +205,38 @@ median of 5 runs. The data lives on tmpfs, on an 8-CPU Linux pod:
 
 | row | dir | GNU s | xfer s | xfer/GNU | GNU RSS MB | xfer RSS MB |
 |---|---|---:|---:|---:|---:|---:|
-| initial: 20k files + 4×256 MB | push | 0.83 | 0.73 | 0.88 | 2 | 6 |
-| | pull | 0.80 | 0.73 | 0.91 | 2 | 8 |
-| no-op resync | push | 0.11 | 0.05 | 0.50 | 2 | 8 |
-| | pull | 0.09 | 0.05 | 0.62 | 2 | 8 |
-| delta: 1 MB changed per big file | push | 0.73 | 0.47 | 0.64 | 3 | 9 |
-| | pull | 0.71 | 0.45 | 0.64 | 3 | 9 |
-| `-c` | push | 0.51 | 0.33 | 0.65 | 2 | 9 |
-| | pull | 0.49 | 0.33 | 0.67 | 2 | 12 |
-| `-z` (zstd), compressible text | push | 1.25 | 1.06 | 0.85 | 5 | 24 |
-| | pull | 1.24 | 1.08 | 0.87 | 5 | 24 |
-| `--delete`, 5k removed | push | 0.15 | 0.10 | 0.68 | 2 | 6 |
-| | pull | 0.13 | 0.10 | 0.79 | 2 | 6 |
-| 200k files, initial copy | push | 4.32 | 3.71 | 0.86 | 2 | 9 |
-| | pull | 4.29 | 3.72 | 0.87 | 2 | 11 |
-| 200k files, no-op | push | 0.70 | 0.43 | 0.62 | 2 | 9 |
-| | pull | 0.68 | 0.44 | 0.64 | 2 | 9 |
+| initial: 20k files + 4×256 MB | push | 0.83 | 0.75 | 0.90 | 2.4 | 8.7 |
+| | pull | 0.82 | 0.73 | 0.89 | 2.3 | 8.7 |
+| no-op resync | push | 0.11 | 0.05 | 0.46 | 2.2 | 8.4 |
+| | pull | 0.09 | 0.05 | 0.64 | 2.1 | 7.9 |
+| delta: 1 MB changed per big file | push | 0.72 | 0.45 | 0.62 | 3.1 | 10.5 |
+| | pull | 0.71 | 0.45 | 0.63 | 3.1 | 10.5 |
+| `-c` | push | 0.51 | 0.36 | 0.71 | 2.2 | 10.8 |
+| | pull | 0.49 | 0.36 | 0.74 | 2.2 | 10.9 |
+| `-z` (zstd), compressible text | push | 1.25 | 1.05 | 0.84 | 5.7 | 28.1 |
+| | pull | 1.23 | 1.08 | 0.88 | 5.8 | 28.2 |
+| `--delete`, 5k removed | push | 0.15 | 0.09 | 0.62 | 2.2 | 8.0 |
+| | pull | 0.13 | 0.10 | 0.80 | 2.2 | 7.9 |
+| 200k files, initial copy | push | 4.32 | 3.72 | 0.86 | 2.3 | 9.0 |
+| | pull | 4.29 | 3.75 | 0.87 | 2.4 | 8.9 |
+| 200k files, no-op | push | 0.70 | 0.45 | 0.64 | 2.3 | 8.8 |
+| | pull | 0.68 | 0.45 | 0.67 | 2.3 | 9.0 |
 
-RSS is the peak resident memory of the larger of the client and server
-processes, each measured on its own with GNU time. GNU rsync, a C
-program, peaks at about 2 MB. xfer peaks at 6 to 12 MB, 24 MB with zstd.
-Most of that is the Go runtime's fixed cost: about 3.7 MB of the binary's
-code and tables are paged in, the garbage collector's smallest heap target
-is 4 MB, and the runtime's own metadata adds about 1 MB. Memory does not
-grow with the size of the tree, thanks to incremental recursion: the 200k-file
-tree peaks within a few MB of the 20k-file one.
+RSS is the peak resident memory of the largest single process (client or
+server), sampled from `/proc/PID/smaps_rollup` every 2 ms in one extra run
+per row. The kernel's own peak counters (`VmHWM`, `getrusage`, GNU time)
+are kept in per-CPU batches, 1.5 MB each on the 192-CPU host the pod runs
+on, so they cannot resolve the difference.
+
+GNU rsync, a C program, peaks at about 2.3 MB on these rows, and xfer at
+8 to 11 MB (28 MB with zstd, whose encoder keeps an 8 MB window). Memory
+does not grow with the tree: 200k files take what 20k do, thanks to
+incremental recursion. Most of xfer's footprint is the Go runtime's fixed
+cost. About 3.4 MB of the binary's code and tables are resident at peak,
+because the kernel maps 64 KB around every page fault and Go's collector
+reads function tables from all over the binary. The heap peaks at about
+3 MB, of which 1 to 1.5 MB is live (xfer runs the collector at GOGC=25 for
+that reason), and goroutine stacks and runtime metadata add 1.5 MB.
 
 With `--ssh HOST` the harness adds a row over real OpenSSH between two
 machines. That row measures the network as much as rsync, and is
@@ -237,11 +244,10 @@ reported but not gated. Between two pods on different nodes:
 
 | row | dir | GNU s | xfer s | xfer/GNU | GNU RSS MB | xfer RSS MB |
 |---|---|---:|---:|---:|---:|---:|
-| initial copy over OpenSSH | push | 1.97 | 1.66 | 0.84 | 8 | 9 |
-| | pull | 1.71 | 1.64 | 0.96 | 8 | 13 |
+| initial copy over OpenSSH | push | 1.97 | 1.66 | 0.84 | 2.3 | 8.3 |
+| | pull | 1.72 | 1.65 | 0.96 | 2.1 | 8.5 |
 
-The RSS figures for this row cover only the local process, and include a
-floor of about 8 MB from the Python harness that starts it.
+The RSS figures for this row cover only the local process.
 
 ## Development
 
