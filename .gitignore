@@ -1,3 +1,4 @@
 bin/
 .claude/
 dist/
+__pycache__/
