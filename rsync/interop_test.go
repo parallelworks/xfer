@@ -540,6 +540,24 @@ func checkMergeDelete(t *testing.T, src, dst, out string) {
 	}
 }
 
+// emptyDirs adds directories that hold nothing, or only excluded files.
+func emptyDirs(t *testing.T, src, dst string) {
+	for _, d := range []string{"e", "x", "y/z", "w"} {
+		os.MkdirAll(filepath.Join(src, "prune", d), 0o755)
+	}
+	os.WriteFile(filepath.Join(src, "prune/x/a.o"), nil, 0o644)
+	os.WriteFile(filepath.Join(src, "prune/w/f"), nil, 0o644)
+	os.MkdirAll(filepath.Join(dst, "prune/e"), 0o755)
+}
+
+func checkPrune(t *testing.T, src, dst, out string) {
+	for name, want := range map[string]bool{"prune/w/f": true, "prune/e": false, "prune/x": false, "prune/y": false, "dir/nested/deep.txt": true, "dir/emptydir": false} {
+		if _, err := os.Lstat(filepath.Join(dst, name)); (err == nil) != want {
+			t.Errorf("%s: exists=%v, want %v", name, err == nil, want)
+		}
+	}
+}
+
 func mustRead(t *testing.T, p string) []byte {
 	b, err := os.ReadFile(p)
 	if err != nil {
@@ -605,6 +623,7 @@ var scenarios = []scenario{
 	{name: "merge-delete-after", opts: []string{"-a", "-F", "--delete-after"}, prepare: mergeDelete, check: checkMergeDelete},
 	{name: "skip-compress-zlib", needs: "zlib", opts: []string{"-a", "--compress-choice=zlib", "--skip-compress=bin/txt", "--no-W"}, prepare: staleDest, times: true, minProto: 31, check: checkIgnoring("extra-file", "extra-dir", "extra-dir/sub", "extra-dir/sub/x")},
 	{name: "skip-compress-zlibx", needs: "zlibx", opts: []string{"-a", "--compress-choice=zlibx", "--skip-compress=bin", "--no-W"}, prepare: staleDest, times: true, minProto: 31, check: checkIgnoring("extra-file", "extra-dir", "extra-dir/sub", "extra-dir/sub/x")},
+	{name: "prune-empty-dirs", opts: []string{"-a", "-m", "--delete", "--exclude=*.o"}, prepare: emptyDirs, check: checkPrune},
 	{name: "sparse", opts: []string{"-a", "-S"}, prepare: sparseFile, check: checkSparse},
 	{name: "timeout", opts: []string{"-a", "--timeout=1", "--delete", "--no-W"}, prepare: staleDest, times: true},
 	{name: "copy-unsafe-links", opts: []string{"-a", "--copy-unsafe-links"}, prepare: unsafeLinks, check: checkUnsafeLinks},

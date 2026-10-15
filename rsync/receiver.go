@@ -96,6 +96,9 @@ func (s *session) receiveFiles(files []*flist.File, users, groups map[uint32]str
 	if rv.root != nil {
 		defer rv.root.Close()
 	}
+	if s.opts.PruneEmptyDirs && !s.inc {
+		pruneEmptyDirs(files)
+	}
 	if !s.inc {
 		rv.byName = make(map[string]int, len(files))
 		for i, f := range files {
@@ -137,6 +140,25 @@ func (s *session) receiveFiles(files []*flist.File, users, groups map[uint32]str
 		return recvErr
 	}
 	return <-genErr
+}
+
+// pruneEmptyDirs drops (-m) the directories with nothing but directories
+// below them, the top directory aside.
+func pruneEmptyDirs(files []*flist.File) {
+	full := map[string]bool{}
+	for _, f := range files {
+		if f.IsDir() || f.Flags&flist.FlagCleared != 0 {
+			continue
+		}
+		for d := path.Dir(f.Name); d != "." && d != "/" && !full[d]; d = path.Dir(d) {
+			full[d] = true
+		}
+	}
+	for _, f := range files {
+		if f.IsDir() && f.Name != "." && !full[strings.TrimSuffix(f.Name, "/.")] {
+			f.Flags |= flist.FlagCleared
+		}
+	}
 }
 
 // openDest resolves the destination argument against the file list.
