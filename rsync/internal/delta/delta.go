@@ -146,13 +146,14 @@ func Match(r io.Reader, s *Sums, strong StrongFunc, e Emitter) error {
 // MatchWith is Match with options.
 func MatchWith(r io.Reader, s *Sums, strong StrongFunc, e Emitter, opts Options) error {
 	m := matcher{r: r, s: s, strong: strong, e: e, inplace: opts.Inplace}
-	if opts.Stats != nil {
-		m.tags = newTags(s)
-	}
 	var err error
 	if s.Count() == 0 {
 		err = m.allLiteral()
 	} else {
+		if opts.Stats != nil {
+			m.tags = newTags(s)
+			defer tagPool.Put(m.tags)
+		}
 		err = m.run()
 	}
 	if st := opts.Stats; st != nil {
@@ -370,8 +371,12 @@ type tagSet [1 << 16 / 64]uint64
 
 func tag(sum uint32) uint32 { return (sum&0xffff + sum>>16) & 0xffff }
 
+// tagPool recycles tag sets, 8 KiB each.
+var tagPool = sync.Pool{New: func() any { return new(tagSet) }}
+
 func newTags(s *Sums) *tagSet {
-	t := new(tagSet)
+	t := tagPool.Get().(*tagSet)
+	*t = tagSet{}
 	for _, w := range s.Weak {
 		g := tag(w)
 		t[g/64] |= 1 << (g % 64)
