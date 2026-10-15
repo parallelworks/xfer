@@ -174,7 +174,17 @@ func (c *Client) Run(ctx context.Context, o *Options, operands []string) (*Stats
 	}
 	waitErr := c.wait(conn, serverDone)
 	stats := &s.stats
-	stats.BytesSent, stats.BytesReceived = s.counter.written.Load(), s.counter.read.Load()
+	// As rsync reports them: a sending client counts its own traffic until
+	// the goodbye; a receiving client shows the remote sender's counts.
+	switch r, w := s.ioCounts(); {
+	case push && s.ended:
+		stats.BytesSent, stats.BytesReceived = s.endCounts[1], s.endCounts[0]
+	case !push && s.peerStats.read+s.peerStats.written > 0:
+		stats.BytesSent, stats.BytesReceived = s.peerStats.read, s.peerStats.written
+	default:
+		stats.BytesSent, stats.BytesReceived = w, r
+	}
+	stats.Protocol = s.proto
 
 	if err != nil && ctx.Err() != nil {
 		return stats, &ExitError{Code: ExitSignal}
@@ -196,7 +206,7 @@ func (c *Client) Run(ctx context.Context, o *Options, operands []string) (*Stats
 		return stats, &ExitError{Code: code, Err: fmt.Errorf("remote rsync exited with status %d: %w", code, waitErr)}
 	}
 	if !o.ListOnly {
-		writeSummary(stdout, stats, o, time.Since(start))
+		writeSummary(stdout, stats, o, time.Now().Unix()-start.Unix())
 	}
 	code := max(s.exitCode, codeForIOError(s.ioErr.Load()))
 	if code != 0 {

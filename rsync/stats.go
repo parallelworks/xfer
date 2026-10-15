@@ -28,12 +28,17 @@ type Stats struct {
 	TotalTransferredSize int64 // bytes in the files transferred
 	LiteralData          int64
 	MatchedData          int64
+	// BlocksTouched counts the distinct 4 KiB regions of files the
+	// receiver wrote. Peers report it from protocol 33 on.
+	BlocksTouched int64
 	FlistSize            int64
 	FlistBuildTime       time.Duration
 	FlistXferTime        time.Duration
 
 	BytesSent     int64 // on the wire
 	BytesReceived int64
+
+	Protocol int // the protocol version the transfer used
 }
 
 // countingConn counts bytes crossing a connection.
@@ -115,7 +120,7 @@ func humanSize(n int64, unit float64) string {
 
 // writeSummary prints the totals shown at the end of a verbose transfer,
 // and the detailed --stats report.
-func writeSummary(w io.Writer, st *Stats, o *Options, elapsed time.Duration) {
+func writeSummary(w io.Writer, st *Stats, o *Options, wholeSecs int64) {
 	h := o.HumanReadable
 	if o.Stats {
 		fmt.Fprintf(w, "\nNumber of files: %s", commaNum(st.NumFiles))
@@ -138,6 +143,9 @@ func writeSummary(w io.Writer, st *Stats, o *Options, elapsed time.Duration) {
 		fmt.Fprintf(w, "Total file size: %s bytes\n", formatNum(st.TotalSize, h))
 		fmt.Fprintf(w, "Total transferred file size: %s bytes\n", formatNum(st.TotalTransferredSize, h))
 		fmt.Fprintf(w, "Literal data: %s bytes\n", formatNum(st.LiteralData, h))
+		if st.Protocol >= 33 {
+			fmt.Fprintf(w, "Number of 4 KiB logical blocks touched: %s\n", commaNum(st.BlocksTouched))
+		}
 		fmt.Fprintf(w, "Matched data: %s bytes\n", formatNum(st.MatchedData, h))
 		fmt.Fprintf(w, "File list size: %s\n", formatNum(st.FlistSize, h))
 		fmt.Fprintf(w, "File list generation time: %.3f seconds\n", st.FlistBuildTime.Seconds())
@@ -148,11 +156,8 @@ func writeSummary(w io.Writer, st *Stats, o *Options, elapsed time.Duration) {
 	if o.Verbose == 0 && !o.Stats {
 		return
 	}
-	secs := elapsed.Seconds()
-	if secs < 0.001 {
-		secs = 0.001
-	}
-	rate := float64(st.BytesSent+st.BytesReceived) / secs
+	// rsync times the run in whole seconds and adds half a second.
+	rate := float64(st.BytesSent+st.BytesReceived) / (0.5 + float64(wholeSecs))
 	fmt.Fprintf(w, "\nsent %s bytes  received %s bytes  %s bytes/sec\n",
 		formatNum(st.BytesSent, h), formatNum(st.BytesReceived, h), formatRate(rate, h))
 	speedup := 0.0

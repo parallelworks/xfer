@@ -5,6 +5,7 @@ package rsync
 
 import (
 	"crypto/fips140"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -19,7 +20,7 @@ import (
 
 const (
 	// ProtocolVersion is the newest rsync protocol version spoken.
-	ProtocolVersion = 31
+	ProtocolVersion = 33
 	// MinProtocolVersion is the oldest rsync protocol version spoken.
 	MinProtocolVersion = 27
 )
@@ -38,10 +39,10 @@ const (
 )
 
 // clientCaps is the capability string our client sends with -e; 'i'
-// (incremental recursion) is added when the options allow it. We leave out
-// 's' (iconv) and 'I' (inplace partial dirs), whose semantics are not
-// implemented.
-const clientCaps = ".LfxCvu"
+// (incremental recursion) is added when the options allow it. 's' (iconv
+// of symlink targets) has no effect since --iconv is not supported, and 'I'
+// (--inplace with --partial-dir) none since we refuse that combination.
+const clientCaps = ".LsfxCIvu"
 
 // allowIncRecurse reports whether this side can use incremental recursion
 // in the given role. The receiving side decides the options that only
@@ -119,6 +120,11 @@ type session struct {
 
 	peerStats struct{ read, written int64 }
 
+	// setupCounts are the bytes read and written by the protocol setup,
+	// endCounts those since then when the sender finished (ended is set).
+	setupCounts, endCounts [2]int64
+	ended                  bool
+
 	ioErr       atomic.Int32 // ioErr* bits, set by more than one goroutine
 	keepalive   atomic.Bool  // the peer accepts MSG_NOOP on our output
 	started     atomic.Bool  // the protocol setup is done
@@ -173,11 +179,10 @@ func (s *session) handshake(clientInfo string) error {
 
 	if s.proto >= 30 {
 		if s.server {
-			s.compat = cfSymlinkTimes
 			for _, c := range []struct {
 				letter byte
 				flag   uint32
-			}{{'f', cfSafeFlist}, {'x', cfAvoidXattrOptim}, {'C', cfChksumSeedFix}, {'v', cfVarintFlistFlags}, {'u', cfID0Names}} {
+			}{{'L', cfSymlinkTimes}, {'s', cfSymlinkIconv}, {'f', cfSafeFlist}, {'x', cfAvoidXattrOptim}, {'C', cfChksumSeedFix}, {'I', cfInplacePartialDir}, {'v', cfVarintFlistFlags}, {'u', cfID0Names}} {
 				if strings.IndexByte(clientInfo, c.letter) >= 0 {
 					s.compat |= c.flag
 				}
@@ -232,6 +237,7 @@ func (s *session) handshake(clientInfo string) error {
 	// Peers of protocol 30 and later accept MSG_NOOP as a keep-alive.
 	s.keepalive.Store(s.proto >= 30 && s.out.Mux.Enabled())
 	s.started.Store(true)
+	s.setupCounts = [2]int64{s.counter.read.Load(), s.counter.written.Load()}
 	return nil
 }
 
@@ -390,7 +396,12 @@ func (s *session) handleMsg(tag byte, payload []byte) error {
 		if len(payload) == 4 {
 			s.ioErr.Or(int32(le32(payload)) & ioErrValidMask)
 		}
-	case wire.MsgNoop, wire.MsgIOTimeout, wire.MsgBlockStats:
+	case wire.MsgBlockStats:
+		// Protocol 33: the receiving server's count of 4 KiB blocks written.
+		if len(payload) == 8 {
+			s.stats.BlocksTouched = int64(binary.LittleEndian.Uint64(payload))
+		}
+	case wire.MsgNoop, wire.MsgIOTimeout:
 	case wire.MsgDeleted:
 		name := strings.TrimSuffix(string(payload), "\x00")
 		isDir := len(payload) > 0 && payload[len(payload)-1] == 0

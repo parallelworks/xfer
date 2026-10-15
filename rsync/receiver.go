@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -39,7 +40,10 @@ type receiving struct {
 
 	root   *dtree // destination; nil in a dry run whose destination does not exist
 	single string // when copying one file onto a file name: that name
-	umask  uint32
+
+	destCreated bool // openDest made the destination directory
+	wrote       bool // the generator wrote a request or item since this was cleared
+	umask       uint32
 
 	// ids maps the sender's uids and gids to ours.
 	uidMap, gidMap map[uint32]uint32
@@ -213,6 +217,7 @@ func (rv *receiving) openDest(dest string) error {
 		if err := mkdir(dest, 0o777); err != nil {
 			return exitErrorf(ExitFileIO, "mkdir %q failed: %s", dest, errnoText(err))
 		}
+		rv.destCreated = true
 		if !rv.s.server && o.Verbose > 0 {
 			rv.s.log.print("created directory " + dest + "\n")
 		}
@@ -328,16 +333,21 @@ func (rv *receiving) phases(endPhase0 bool) error {
 	mode := rv.deleteMode()
 	earlyDelete := !(mode == DeleteDelay || mode == DeleteAfter)
 
+	// done ends a phase. The NDX_DONE is sent with whatever follows it
+	// before we next wait.
 	done := func() error {
 		w.Lock()
 		w.W.Ndx(wire.NdxDone)
-		err := w.W.Flush()
+		err := w.W.Err()
 		w.Unlock()
 		return err
 	}
 	// waitAck processes redo requests until the receiver acknowledges
 	// the end of a phase.
 	waitAck := func() error {
+		if err := w.Flush(); err != nil {
+			return err
+		}
 		for ev := range rv.events {
 			if ev.ack {
 				return nil
@@ -418,7 +428,14 @@ func (rv *receiving) phases(endPhase0 bool) error {
 		}
 	}
 	rv.touchUpDirs()
-	return done()
+	if s.server && s.proto >= 33 {
+		// The client reports what we wrote.
+		w.SendMsg(wire.MsgBlockStats, binary.LittleEndian.AppendUint64(nil, uint64(s.stats.BlocksTouched)))
+	}
+	if err := done(); err != nil {
+		return err
+	}
+	return w.Flush()
 }
 
 var errReceiverStopped = errors.New("receiver stopped")
@@ -547,6 +564,7 @@ func (rv *receiving) genFile(ndx int32, f *flist.File, redo bool) (requested boo
 	w.Lock()
 	defer w.Unlock()
 	s.writeRequest(request{ndx: ndx, iflags: iflags})
+	rv.wrote = true
 	if !o.DryRun {
 		s.writeSumHead(head)
 		w.W.Write(sums)
@@ -719,6 +737,7 @@ func (rv *receiving) itemize(ndx int32, f *flist.File, iflags uint32) {
 	s.out.Lock()
 	s.writeRequest(request{ndx: ndx, iflags: iflags})
 	s.out.Unlock()
+	rv.wrote = true
 }
 
 func (rv *receiving) genDir(ndx int32, f *flist.File, name string, fi fs.FileInfo, exists bool) error {
@@ -754,6 +773,8 @@ func (rv *receiving) genDir(ndx int32, f *flist.File, name string, fi fs.FileInf
 			}
 			s.stats.NumCreated++
 		}
+	} else if name == "." && rv.destCreated {
+		iflags = itemLocalChange | itemIsNew // we made it in openDest
 	} else {
 		iflags = rv.itemFlags(f, fi, 0)
 	}
@@ -1362,6 +1383,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr tok
 	if writeErr == nil {
 		writeErr = bw.Flush()
 	}
+	s.stats.BlocksTouched += ow.blocks
 	if writeErr == nil && (inplace || ow.sparse) {
 		writeErr = tmp.Truncate(ow.off)
 	}
@@ -1597,13 +1619,33 @@ type offsetWriter struct {
 	f      *os.File
 	off    int64
 	sparse bool
+
+	// blocks counts the distinct 4 KiB blocks written; writes only move
+	// forward, so the last block counted is enough to avoid counting one
+	// twice.
+	blocks, last int64
 }
 
 const sparseBlock = 4096
 
+func (w *offsetWriter) writeAt(p []byte, off int64) (int, error) {
+	n, err := w.f.WriteAt(p, off)
+	if n > 0 {
+		first, end := off/4096, (off+int64(n)-1)/4096
+		if first <= w.last-1 {
+			first = w.last
+		}
+		if end >= first {
+			w.blocks += end - first + 1
+			w.last = end + 1
+		}
+	}
+	return n, err
+}
+
 func (w *offsetWriter) Write(p []byte) (int, error) {
 	if !w.sparse {
-		n, err := w.f.WriteAt(p, w.off)
+		n, err := w.writeAt(p, w.off)
 		w.off += int64(n)
 		return n, err
 	}
@@ -1624,7 +1666,7 @@ func (w *offsetWriter) Write(p []byte) (int, error) {
 			}
 			n += m
 		}
-		if _, err := w.f.WriteAt(p[:n], w.off); err != nil {
+		if _, err := w.writeAt(p[:n], w.off); err != nil {
 			return total - len(p), err
 		}
 		w.off += int64(n)

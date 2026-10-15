@@ -110,7 +110,7 @@ func refRsync(t *testing.T) *peer {
 
 func xferPeer(t *testing.T) *peer {
 	bin := xferBinary(t)
-	return &peer{name: "xfer", argv: []string{bin, "rsync"}, server: bin + " rsync", version: 31}
+	return &peer{name: "xfer", argv: []string{bin, "rsync"}, server: bin + " rsync", version: 33}
 }
 
 // fakeSSH writes a remote shell that ignores the host and runs the command

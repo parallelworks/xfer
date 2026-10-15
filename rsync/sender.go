@@ -262,7 +262,16 @@ func (s *session) sendFiles() error {
 	if err != nil {
 		return err
 	}
+	// rsync's byte counts end here, before the goodbye.
+	s.endCounts[0], s.endCounts[1] = s.ioCounts()
+	s.ended = true
 	return s.readFinalGoodbye()
+}
+
+// ioCounts returns the bytes read and written since the protocol setup,
+// which rsync leaves out of its counts.
+func (s *session) ioCounts() (read, written int64) {
+	return s.counter.read.Load() - s.setupCounts[0], s.counter.written.Load() - s.setupCounts[1]
 }
 
 func le32bytes(v uint32) []byte { return []byte{byte(v), byte(v >> 8), byte(v >> 16), byte(v >> 24)} }
@@ -420,8 +429,11 @@ func (s *session) writeStats() {
 			w.Longint(v)
 		}
 	}
-	put(s.counter.read.Load())
-	put(s.counter.written.Load() + int64(w.Buffered()))
+	// Only what has reached the connection counts: not the NDX_DONE
+	// buffered with these stats.
+	r, wr := s.ioCounts()
+	put(r)
+	put(wr)
 	put(s.stats.TotalSize)
 	if s.proto >= 29 {
 		put(s.stats.FlistBuildTime.Milliseconds())

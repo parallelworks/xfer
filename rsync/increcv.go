@@ -25,6 +25,9 @@ func (rv *receiving) generateInc() error {
 	deleting := o.Delete != DeleteNone && rv.deleteMode() == DeleteDuring
 
 	finished := 0 // lists whose NDX_DONE was sent
+	// eachDone sends every NDX_DONE as soon as it is written: once the
+	// lists are walked, each follows the end of a transfer.
+	eachDone := false
 	// finish sends NDX_DONE for the completed lists before list cur.
 	finish := func(cur int) error {
 		for finished < cur {
@@ -34,6 +37,9 @@ func (rv *receiving) generateInc() error {
 			}
 			w.Lock()
 			w.W.Ndx(wire.NdxDone)
+			if eachDone {
+				w.W.Flush()
+			}
 			w.Unlock()
 			if l.parent >= 0 {
 				rv.touchUpDir(lists.dir(l.parent))
@@ -82,12 +88,23 @@ func (rv *receiving) generateInc() error {
 	}
 	// await blocks for an event or (if lists is set) a new list.
 	await := func(forList bool) error {
-		if err := w.Flush(); err != nil {
-			return err
-		}
 		var notify chan struct{}
 		if forList {
 			notify = lists.notify
+		}
+		// Output waits until we would block, as rsync's does.
+		select {
+		case ev, ok := <-rv.events:
+			if !ok {
+				return errReceiverStopped
+			}
+			return handle(ev)
+		case <-notify:
+			return nil
+		default:
+		}
+		if err := w.Flush(); err != nil {
+			return err
 		}
 		select {
 		case ev, ok := <-rv.events:
@@ -158,12 +175,20 @@ func (rv *receiving) generateInc() error {
 				return err
 			}
 		}
+		// Each list's requests go out together, as rsync sends them.
+		if rv.wrote {
+			rv.wrote = false
+			if err := w.Flush(); err != nil {
+				return err
+			}
+		}
 		if err := finish(n); err != nil {
 			return err
 		}
 	}
 	// Every list is walked; finish them as their transfers end. The last
 	// list's NDX_DONE also ends phase 0.
+	eachDone = true
 	for {
 		total := lists.count()
 		if err := finish(total); err != nil {
@@ -175,9 +200,6 @@ func (rv *receiving) generateInc() error {
 		if err := await(false); err != nil {
 			return err
 		}
-	}
-	if err := w.Flush(); err != nil {
-		return err
 	}
 	return rv.phases(false)
 }
