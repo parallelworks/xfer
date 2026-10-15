@@ -1,0 +1,19 @@
+sending incremental file list
+
+Number of files: 10 (reg: 5, dir: 4, link: 1)
+Number of created files: 0
+Number of deleted files: 0
+Number of regular files transferred: 0
+Total file size: 100,019 bytes
+Total transferred file size: 0 bytes
+Literal data: 0 bytes
+Number of 4 KiB logical blocks touched: 0
+Matched data: 0 bytes
+File list size: 0
+File list generation time: 0.001 seconds
+File list transfer time: 0.000 seconds
+Total bytes sent: 197
+Total bytes received: 15
+
+sent 197 bytes  received 15 bytes  424.00 bytes/sec
+total size is 100,019  speedup is 471.79

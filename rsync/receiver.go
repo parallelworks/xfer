@@ -16,6 +16,7 @@ import (
 	"os/user"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,7 +43,7 @@ type receiving struct {
 	single string // when copying one file onto a file name: that name
 
 	destCreated bool // openDest made the destination directory
-	wrote       bool // the generator wrote a request or item since this was cleared
+	made        int  // entries the generator created
 	umask       uint32
 
 	// ids maps the sender's uids and gids to ours.
@@ -124,6 +125,10 @@ func (s *session) receiveFiles(files []*flist.File, users, groups map[uint32]str
 		}
 	}
 
+	// From here the generator flushes its output when it would block, as
+	// rsync's does; the receiver's reads must not flush it at other times,
+	// which would make the order of the output depend on timing.
+	s.demux.BeforeBlock = nil
 	genErr := make(chan error, 1)
 	go func() {
 		if s.inc {
@@ -207,6 +212,9 @@ func (rv *receiving) openDest(dest string) error {
 		return exitErrorf(ExitFileIO, "ERROR: destination must be a directory when copying more than 1 file")
 	}
 	if !exists {
+		if rv.reportsNames() {
+			rv.s.info("created directory " + strings.TrimSuffix(dest, "/") + "\n")
+		}
 		if o.DryRun {
 			return nil
 		}
@@ -218,9 +226,6 @@ func (rv *receiving) openDest(dest string) error {
 			return exitErrorf(ExitFileIO, "mkdir %q failed: %s", dest, errnoText(err))
 		}
 		rv.destCreated = true
-		if !rv.s.server && o.Verbose > 0 {
-			rv.s.log.print("created directory " + dest + "\n")
-		}
 	}
 	root, err := os.OpenRoot(dest)
 	if err != nil {
@@ -305,8 +310,30 @@ func (rv *receiving) gid(f *flist.File) uint32 {
 
 // generator ----------------------------------------------------------------
 
+// deltaNotice says, at -vv, whether files are sent as deltas.
+func (rv *receiving) deltaNotice() {
+	if rv.s.log.lv.debug[debugDeltasum] == 0 || rv.o.ListOnly {
+		return
+	}
+	if rv.wholeFile() {
+		rv.s.info("delta-transmission disabled for local transfer or --whole-file\n")
+	} else {
+		rv.s.info("delta-transmission enabled\n")
+	}
+}
+
+// uptodate reports an unchanged entry at -vv, unless changes are itemized.
+func (rv *receiving) uptodate(f *flist.File) {
+	l := rv.s.log
+	if l.lv.info[infoName] < 2 || l.hasI > 0 || rv.o.ItemizeChanges > 0 || strings.Contains(rv.o.OutFormat, "%i") {
+		return
+	}
+	rv.s.info(l.safe(f.Name) + " is uptodate\n")
+}
+
 func (rv *receiving) generate() error {
 	o := rv.o
+	rv.deltaNotice()
 	if o.Delete != DeleteNone && rv.deleteMode() == DeleteBefore {
 		rv.deletePass()
 	}
@@ -508,6 +535,7 @@ func (rv *receiving) genFile(ndx int32, f *flist.File, redo bool) (requested boo
 			iflags = rv.itemFlags(f, fi, 0)
 			rv.setAttrs(name, f, fi, false)
 			rv.itemize(ndx, f, iflags)
+			rv.uptodate(f)
 			if o.RemoveSourceFiles {
 				s.out.SendMsgInt(wire.MsgSuccess, ndx)
 			}
@@ -564,7 +592,7 @@ func (rv *receiving) genFile(ndx int32, f *flist.File, redo bool) (requested boo
 	w.Lock()
 	defer w.Unlock()
 	s.writeRequest(request{ndx: ndx, iflags: iflags})
-	rv.wrote = true
+	s.countCreated(f, iflags)
 	if !o.DryRun {
 		s.writeSumHead(head)
 		w.W.Write(sums)
@@ -737,7 +765,7 @@ func (rv *receiving) itemize(ndx int32, f *flist.File, iflags uint32) {
 	s.out.Lock()
 	s.writeRequest(request{ndx: ndx, iflags: iflags})
 	s.out.Unlock()
-	rv.wrote = true
+	s.countCreated(f, iflags)
 }
 
 func (rv *receiving) genDir(ndx int32, f *flist.File, name string, fi fs.FileInfo, exists bool) error {
@@ -771,7 +799,7 @@ func (rv *receiving) genDir(ndx int32, f *flist.File, name string, fi fs.FileInf
 				s.sendError("recv_generator: mkdir %q failed: %s", name, errnoText(err))
 				return nil
 			}
-			s.stats.NumCreated++
+			rv.made++
 		}
 	} else if name == "." && rv.destCreated {
 		iflags = itemLocalChange | itemIsNew // we made it in openDest
@@ -788,6 +816,21 @@ func (rv *receiving) genDir(ndx int32, f *flist.File, name string, fi fs.FileInf
 		rv.deleteInDir(name, f.Name, rv.inList)
 	}
 	return nil
+}
+
+// reportsNames reports whether the receiver mentions the names it
+// creates. A remote server learns of the client's output only from its
+// --log-format, which says to log names when it has %n or %i; a local
+// one shares the client's options.
+func (rv *receiving) reportsNames() bool {
+	s, o := rv.s, rv.o
+	switch {
+	case o.Verbose > 0 || o.ItemizeChanges > 0:
+		return true
+	case s.server && !s.localTransfer:
+		return strings.Contains(o.OutFormat, "%n") || strings.Contains(o.OutFormat, "%i")
+	}
+	return o.OutFormat != "" || s.log.format != ""
 }
 
 // super reports whether to attempt what only the super-user may do: set
@@ -837,6 +880,7 @@ func (rv *receiving) genSymlink(ndx int32, f *flist.File, name string, fi fs.Fil
 				rv.setLinkTime(name, f, fi)
 			}
 			rv.itemize(ndx, f, iflags)
+			rv.uptodate(f)
 			return nil
 		}
 	}
@@ -855,7 +899,7 @@ func (rv *receiving) genSymlink(ndx int32, f *flist.File, name string, fi fs.Fil
 			s.sendError("symlink %q -> %q failed: %s", name, f.Link, errnoText(err))
 			return nil
 		}
-		s.stats.NumCreated++
+		rv.made++
 		if o.Owner || o.Group {
 			rv.chown(nil, name, f, nil, true)
 		}
@@ -892,6 +936,7 @@ func (rv *receiving) genSpecial(ndx int32, f *flist.File, name string, fi fs.Fil
 				rv.setAttrs(name, f, fi, false)
 			}
 			rv.itemize(ndx, f, iflags)
+			rv.uptodate(f)
 			return nil
 		}
 	}
@@ -910,7 +955,7 @@ func (rv *receiving) genSpecial(ndx int32, f *flist.File, name string, fi fs.Fil
 			s.sendError("mknod %q failed: %s", name, errnoText(err))
 			return nil
 		}
-		s.stats.NumCreated++
+		rv.made++
 		if nfi, err := rv.root.Lstat(name); err == nil {
 			rv.setAttrs(name, f, nfi, true)
 		}
@@ -1110,7 +1155,7 @@ func (rv *receiving) touchUpDir(f *flist.File) {
 	case o.Perms:
 		want = f.Perm()
 	default:
-		if rv.s.stats.NumCreated > 0 && cur&0o700 == 0o700 && f.Perm()&0o700 != 0o700 {
+		if rv.made > 0 && cur&0o700 == 0o700 && f.Perm()&0o700 != 0o700 {
 			// Directory we made writable on creation.
 			want = (f.Perm() &^ rv.umask) & 0o7777
 		}
@@ -1288,7 +1333,9 @@ func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr tok
 		if s.log.format != "" && !s.logAfter() {
 			s.log.item(f, req.iflags, req.xname)
 		}
-		s.log.progress.begin(f.Name, f.Size, max(0, s.lists.total-int(req.ndx)-1), s.lists.total)
+		rem, total, more := s.lists.toCheck(req.ndx)
+		s.log.progress.begin(f.Name, f.Size, rem, total, more)
+		s.log.progress.shown()
 	}
 
 	fileHash.Reset()
@@ -1536,7 +1583,10 @@ func (rv *receiving) deleteInDir(name, wireName string, keep func(wireName strin
 	if wireName != "." && wireName != "" {
 		prefix = strings.TrimSuffix(wireName, "/.") + "/"
 	}
-	for _, e := range entries {
+	// Like rsync, in reverse file-list order.
+	slices.SortFunc(entries, listOrder)
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
 		wn := prefix + e.Name()
 		if keep(wn) {
 			continue
@@ -1545,21 +1595,35 @@ func (rv *receiving) deleteInDir(name, wireName string, keep func(wireName strin
 		if !o.DeleteExcluded && rv.filters.Excluded(wn, isDir, filter.ReceiverSide) {
 			continue // protected
 		}
-		if o.MaxDelete != 0 && (o.MaxDelete < 0 || rv.deletes >= o.MaxDelete) {
-			if !rv.delLimit {
-				rv.delLimit = true
-				s.ioErr.Or(ioErrDelLimit)
-				s.info(fmt.Sprintf("Deletions stopped due to --max-delete limit (%d skipped)\n", 1))
-			}
-			continue
-		}
 		local := path.Join(name, e.Name())
 		rv.deleteEntry(local, wn, e)
 	}
 }
 
+// deleteEntry deletes (or with --backup, backs up) an extraneous entry. A
+// directory's contents go first, each reported, deepest first and in
+// reverse name order, as rsync does.
 func (rv *receiving) deleteEntry(local, wn string, e fs.DirEntry) {
 	s, o := rv.s, rv.o
+	if o.MaxDelete != 0 && (o.MaxDelete < 0 || rv.deletes >= o.MaxDelete) {
+		if !rv.delLimit {
+			rv.delLimit = true
+			s.ioErr.Or(ioErrDelLimit)
+			s.info(fmt.Sprintf("Deletions stopped due to --max-delete limit (%d skipped)\n", 1))
+		}
+		return
+	}
+	if e.IsDir() && !o.backups() {
+		if d, err := rv.root.Open(local); err == nil {
+			entries, _ := d.ReadDir(-1)
+			d.Close()
+			slices.SortFunc(entries, listOrder)
+			for i := len(entries) - 1; i >= 0; i-- {
+				c := entries[i]
+				rv.deleteEntry(path.Join(local, c.Name()), wn+"/"+c.Name(), c)
+			}
+		}
+	}
 	kind := 0
 	switch t := e.Type(); {
 	case t.IsDir():
@@ -1603,6 +1667,18 @@ func (rv *receiving) deleteEntry(local, wn string, e fs.DirEntry) {
 	} else {
 		s.log.deleted(wn, kind == 1)
 	}
+}
+
+// listOrder orders a directory's entries as the file list does: files
+// before subdirectories, each by name.
+func listOrder(a, b fs.DirEntry) int {
+	if a.IsDir() != b.IsDir() {
+		if a.IsDir() {
+			return 1
+		}
+		return -1
+	}
+	return strings.Compare(a.Name(), b.Name())
 }
 
 func (rv *receiving) deletedStats() [5]int32 {

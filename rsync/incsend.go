@@ -138,14 +138,13 @@ func (s *session) sendLookahead() error {
 }
 
 // sendFirstExtra follows a first list: with no directories to list the
-// end marker follows at once, and after a first list of one entry lists
-// are sent until another entry is listed, because a receiver reads that
-// far before it chooses its destination.
+// end marker follows at once, and after a first list of one entry lists are sent
+// until another entry is listed, because a receiver reads that far before
+// it chooses its destination. Like rsync, it leaves the output buffered:
+// the lists go out together when the sender waits for the receiver.
 func (s *session) sendFirstExtra(files []*flist.File) error {
-	if len(files) != 1 && len(s.exp.stack[0].nodes) > 0 {
-		return nil
-	}
-	for !s.lists.done() {
+	more := len(files) == 1 || len(s.exp.stack[0].nodes) == 0
+	for more && !s.lists.done() {
 		n, err := s.sendNextList()
 		if err != nil {
 			return err
@@ -154,8 +153,5 @@ func (s *session) sendFirstExtra(files []*flist.File) error {
 			break
 		}
 	}
-	s.out.Lock()
-	err := s.out.W.Flush()
-	s.out.Unlock()
-	return err
+	return nil
 }

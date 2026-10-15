@@ -1,0 +1,14 @@
+sending incremental file list
+delta-transmission disabled for local transfer or --whole-file
+l is uptodate
+nl\#012x is uptodate
+a
+d/
+d/b
+d/new
+f/
+f/big
+total: matches=0  hash_hits=0  false_alarms=0 data=100013
+
+sent 100,431 bytes  received 231 bytes  201,324.00 bytes/sec
+total size is 100,022  speedup is 0.99

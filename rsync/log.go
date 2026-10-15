@@ -47,11 +47,15 @@ type logger struct {
 	stdout io.Writer
 	stderr io.Writer
 	opts   *Options
+	lv     levels // --info and --debug
 	format string // per-file output format; "" prints nothing
 	hasI   int    // the format contains %i (2 with -ii: show unchanged too)
 
 	// Set when we are the sending client so '<' marks outgoing files.
 	sending bool
+	// localSender is set for the sending client of a local transfer, which
+	// itemizes as the receiver but names its operation "send".
+	localSender bool
 	// symlinkTimes reports whether the receiver can set symlink times.
 	symlinkTimes bool
 
@@ -59,13 +63,13 @@ type logger struct {
 }
 
 func newLogger(o *Options, stdout, stderr io.Writer) *logger {
-	l := &logger{stdout: stdout, stderr: stderr, opts: o}
+	l := &logger{stdout: stdout, stderr: stderr, opts: o, lv: outputLevels(o)}
 	switch {
 	case o.OutFormat != "":
 		l.format = o.OutFormat
 	case o.ItemizeChanges > 0:
 		l.format = "%i %n%L"
-	case o.Verbose > 0:
+	case l.lv.info[infoName] > 0:
 		l.format = "%n%L"
 	}
 	if strings.Contains(l.format, "%i") {
@@ -77,8 +81,8 @@ func newLogger(o *Options, stdout, stderr io.Writer) *logger {
 	if o.Quiet {
 		l.format = ""
 	}
-	if o.Progress || o.ProgressTotal {
-		l.progress = &progress{l: l, total: o.ProgressTotal}
+	if p := l.lv.info[infoProgress]; p > 0 {
+		l.progress = &progress{l: l, total: p > 1}
 	}
 	return l
 }
@@ -117,7 +121,7 @@ func (l *logger) remote(isErr bool, text []byte) {
 }
 
 func (l *logger) deleted(name string, isDir bool) {
-	if l.format == "" && l.opts.Verbose == 0 {
+	if l.format == "" && l.lv.info[infoDel] == 0 {
 		return
 	}
 	if isDir && !strings.HasSuffix(name, "/") {
@@ -138,7 +142,7 @@ func (l *logger) shouldLog(f *flist.File, iflags uint32, xname string) bool {
 	}
 	sig := iflags&significantItemFlags != 0
 	switch {
-	case l.hasI > 0 && (sig || xname != "" || l.hasI > 1 || l.opts.Verbose > 1):
+	case l.hasI > 0 && (sig || xname != "" || l.hasI > 1 || l.lv.info[infoName] > 1):
 		return true
 	case iflags&itemLocalChange != 0 && sig:
 		return true
@@ -156,7 +160,7 @@ func (l *logger) item(f *flist.File, iflags uint32, xname string) {
 		return
 	}
 	op := "recv"
-	if l.sending {
+	if l.sending || l.localSender {
 		op = "send"
 	}
 	l.print(l.expand(f, iflags, op, xname) + "\n")
@@ -431,6 +435,8 @@ type progress struct {
 	xfrNum    int
 	toCheck   int
 	numFiles  int
+	more      bool // more file lists are coming (incremental recursion)
+	updated   bool // the current file's progress was shown
 	onLine    bool
 }
 
@@ -441,8 +447,10 @@ func (p *progress) clearLine() {
 	}
 }
 
-// begin starts tracking a file transfer.
-func (p *progress) begin(name string, size int64, remaining, numFiles int) {
+// begin starts tracking a file transfer. remaining counts the entries
+// after this one in the file lists so far, numFiles all of them, and more
+// is set while further lists may come.
+func (p *progress) begin(name string, size int64, remaining, numFiles int, more bool) {
 	if p == nil {
 		return
 	}
@@ -451,8 +459,19 @@ func (p *progress) begin(name string, size int64, remaining, numFiles int) {
 		p.start = now
 	}
 	p.name, p.size, p.done, p.fileStart = name, size, 0, now
-	p.toCheck, p.numFiles = remaining, numFiles
+	p.toCheck, p.numFiles, p.more = remaining, numFiles, more
+	p.updated = false
 	p.xfrNum++
+}
+
+// shown shows the current file at 0%, as a receiver does before its data
+// arrives.
+func (p *progress) shown() {
+	if p == nil {
+		return
+	}
+	p.updated = true
+	p.render(false)
 }
 
 // update records n more bytes of the current file.
@@ -462,7 +481,8 @@ func (p *progress) update(n int64) {
 	}
 	p.done += n
 	p.xferred += n
-	if time.Since(p.lastPrint) >= 250*time.Millisecond {
+	if !p.updated || time.Since(p.lastPrint) >= 250*time.Millisecond {
+		p.updated = true
 		p.render(false)
 	}
 }
@@ -499,9 +519,13 @@ func (p *progress) render(final bool) {
 	} else if rate > 0 && size > done {
 		eta = time.Duration(float64(size-done) / rate * float64(time.Second))
 	}
-	line := fmt.Sprintf("\r%15s %3d%% %10s %s", formatNum(done, p.l.opts.HumanReadable), pct, rateString(rate), clock(eta))
+	line := fmt.Sprintf("\r%15s %3d%% %s %s", formatNum(done, p.l.opts.HumanReadable), pct, rateString(rate), clock(eta))
 	if final || p.total {
-		line += fmt.Sprintf(" (xfr#%d, to-chk=%d/%d)", p.xfrNum, p.toCheck, p.numFiles)
+		chk := "to-chk"
+		if p.more {
+			chk = "ir-chk"
+		}
+		line += fmt.Sprintf(" (xfr#%d, %s=%d/%d)", p.xfrNum, chk, p.toCheck, p.numFiles)
 	}
 	io.WriteString(p.l.stdout, line)
 	p.onLine = true
@@ -511,17 +535,20 @@ func (p *progress) render(final bool) {
 	}
 }
 
+// rateString renders a rate as rsync's progress does: in kB/s, MB/s or
+// GB/s, right-aligned.
 func rateString(r float64) string {
-	units := []string{"B/s", "kB/s", "MB/s", "GB/s", "TB/s"}
+	units := []string{"kB/s", "MB/s", "GB/s"}
+	r /= 1024
 	i := 0
-	for r >= 1024 && i < len(units)-1 {
+	for r > 1024 && i < len(units)-1 {
 		r /= 1024
 		i++
 	}
-	return fmt.Sprintf("%.2f%s", r, units[i])
+	return fmt.Sprintf("%7.2f%s", r, units[i])
 }
 
 func clock(d time.Duration) string {
 	s := int64(d.Seconds())
-	return fmt.Sprintf("%d:%02d:%02d", s/3600, s/60%60, s%60)
+	return fmt.Sprintf("%4d:%02d:%02d", s/3600, s/60%60, s%60)
 }

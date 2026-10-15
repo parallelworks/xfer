@@ -1,0 +1,10 @@
+.d          ./
+.f          a
+.L          l -> a
+.f          nl\#012x
+.d          d/
+.f          d/b
+.d          d/e/
+.d          f/
+.f          f/big
+.f          f/empty

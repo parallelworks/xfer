@@ -1,0 +1,10 @@
+building file list ... done
+a
+d/
+d/b
+d/new
+f/
+f/big
+
+sent 100,378 bytes  received 94 bytes  200,944.00 bytes/sec
+total size is 100,022  speedup is 1.00

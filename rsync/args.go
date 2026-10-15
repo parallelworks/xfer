@@ -97,8 +97,22 @@ var optionTable = []option{
 	{long: []string{"verbose"}, short: 'v',
 		set: func(o *Options, _ string) error { o.Verbose++; return nil }, unset: func(o *Options) { o.Verbose = 0 }},
 	{long: []string{"quiet"}, short: 'q', noNeg: true, set: func(o *Options, _ string) error { o.Quiet = true; return nil }},
-	{long: []string{"info"}, arg: argString, noNeg: true, set: setInfo},
-	ignored("debug", 0, argString),
+	{long: []string{"info"}, arg: argString, noNeg: true, set: func(o *Options, v string) error {
+		var scratch [numInfo]int
+		if err := applyWords(v, infoNames(), scratch[:], "info"); err != nil {
+			return err
+		}
+		o.Info = append(o.Info, v)
+		return nil
+	}},
+	{long: []string{"debug"}, arg: argString, noNeg: true, set: func(o *Options, v string) error {
+		var scratch [numDebug]int
+		if err := applyWords(v, debugNames(), scratch[:], "debug"); err != nil {
+			return err
+		}
+		o.Debug = append(o.Debug, v)
+		return nil
+	}},
 	ignored("motd", 0, argNone),
 	ignored("msgs2stderr", 0, argNone),
 	boolOpt("stats", 0, func(o *Options) *bool { return &o.Stats }),
@@ -646,24 +660,4 @@ func ParseSize(s string, unit int64) (int64, error) {
 		}
 	}
 	return int64(f*mult) + adjust, nil
-}
-
-func setInfo(o *Options, v string) error {
-	for _, w := range strings.Split(v, ",") {
-		w = strings.ToLower(strings.TrimSpace(w))
-		switch {
-		case w == "progress2":
-			o.ProgressTotal = true
-		case w == "progress1" || w == "progress":
-			o.Progress = true
-		case w == "progress0":
-			o.Progress, o.ProgressTotal = false, false
-		case strings.HasPrefix(w, "stats"):
-			o.Stats = w != "stats0"
-		case w == "none" || w == "":
-		default:
-			// Other --info flags tune verbosity only; accept them.
-		}
-	}
-	return nil
 }

@@ -36,6 +36,7 @@ const fnamecmpFname = 0x80
 func (s *session) readRequest() (request, error) {
 	r := s.in
 	for {
+		start := s.demux.DataRead()
 		ndx := r.Ndx()
 		if err := r.Err(); err != nil {
 			return request{}, err
@@ -57,6 +58,7 @@ func (s *session) readRequest() (request, error) {
 			if err := s.recvSubList(ndx); err != nil {
 				return request{}, err
 			}
+			s.stats.FlistSize += s.demux.DataRead() - start
 			continue
 		}
 		if ndx < 0 {
@@ -170,6 +172,7 @@ func (s *session) sendFiles() error {
 	fileHash := checksum.NewFile(s.xferSum, s.seed)
 	// A local transfer reports from the receiving side, as rsync does.
 	s.log.sending = !s.localTransfer
+	s.log.localSender = s.localTransfer
 
 	if s.opts.RemoveSourceFiles {
 		s.onSuccess = func(ndx int32) {
@@ -212,6 +215,7 @@ func (s *session) sendFiles() error {
 		if err != nil {
 			return err
 		}
+		s.countCreated(f, req.iflags)
 		if req.iflags&itemTransfer == 0 {
 			if !s.server && s.log.shouldLog(f, req.iflags, req.xname) {
 				s.log.item(f, req.iflags, req.xname)
@@ -248,6 +252,11 @@ func (s *session) sendFiles() error {
 		}
 	}
 
+	if s.log.lv.debug[debugDeltasum] > 0 {
+		m := s.matchStats
+		s.info(fmt.Sprintf("total: matches=%d  hash_hits=%d  false_alarms=%d data=%d\n",
+			m.Matches, m.HashHits, m.FalseAlarms, s.stats.LiteralData))
+	}
 	s.out.Lock()
 	if s.proto >= 30 && s.ioErr.Load() != 0 {
 		s.out.W.Flush()
@@ -271,7 +280,7 @@ func (s *session) sendFiles() error {
 // ioCounts returns the bytes read and written since the protocol setup,
 // which rsync leaves out of its counts.
 func (s *session) ioCounts() (read, written int64) {
-	return s.counter.read.Load() - s.setupCounts[0], s.counter.written.Load() - s.setupCounts[1]
+	return s.demux.Consumed() - s.setupCounts[0], s.counter.written.Load() - s.setupCounts[1]
 }
 
 func le32bytes(v uint32) []byte { return []byte{byte(v), byte(v >> 8), byte(v >> 16), byte(v >> 24)} }
@@ -321,7 +330,8 @@ func (s *session) sendFile(f *flist.File, req request, head sumHead, sums *delta
 		if s.log.format != "" && !s.logAfter() {
 			s.log.item(f, req.iflags, req.xname)
 		}
-		s.log.progress.begin(f.Name, f.Size, 0, s.lists.total)
+		rem, total, more := s.lists.toCheck(req.ndx)
+		s.log.progress.begin(f.Name, f.Size, rem, total, more)
 	}
 	fileHash.Reset()
 	if s.compressFile != nil {
@@ -332,7 +342,7 @@ func (s *session) sendFile(f *flist.File, req request, head sumHead, sums *delta
 	if s.opts.BWLimit > 0 {
 		src = newRateLimiter(file, s.opts.BWLimit)
 	}
-	err = delta.MatchWith(src, sums, block.Sum, em, delta.Options{Inplace: s.opts.Inplace})
+	err = delta.MatchWith(src, sums, block.Sum, em, delta.Options{Inplace: s.opts.Inplace, Stats: &s.matchStats})
 	if err == nil {
 		err = tw.End()
 	}

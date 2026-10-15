@@ -1,0 +1,15 @@
+sending incremental file list
+created directory dst
+./
+a
+l -> a
+nl\#012x
+d/
+d/b
+d/e/
+f/
+f/big
+f/empty
+
+sent 232 bytes  received 75 bytes  614.00 bytes/sec
+total size is 100,019  speedup is 325.79 (DRY RUN)

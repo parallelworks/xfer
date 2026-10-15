@@ -138,6 +138,10 @@ type Options struct {
 	Sender bool
 
 	// set records which options were given explicitly, keyed by long name.
+	// Info and Debug are --info and --debug arguments, applied in order
+	// after -v; see the --info=help output.
+	Info, Debug []string
+
 	set map[string]bool
 }
 

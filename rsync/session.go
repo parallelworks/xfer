@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 
 	"github.com/parallelworks/xfer/rsync/internal/checksum"
+	"github.com/parallelworks/xfer/rsync/internal/delta"
 	"github.com/parallelworks/xfer/rsync/internal/flist"
 	"github.com/parallelworks/xfer/rsync/internal/wire"
 )
@@ -114,6 +115,9 @@ type session struct {
 	filesFrom []string // the client's --files-from list, when it read it
 
 	compressFile func(f *flist.File) // sender: --skip-compress for the next file
+	matchStats   delta.Stats         // sender: how blocks were matched, for -vv
+
+	onListSent func() // called once the first file list is built
 
 	onSuccess func(ndx int32)
 	onNoSend  func(ndx int32)
@@ -237,7 +241,7 @@ func (s *session) handshake(clientInfo string) error {
 	// Peers of protocol 30 and later accept MSG_NOOP as a keep-alive.
 	s.keepalive.Store(s.proto >= 30 && s.out.Mux.Enabled())
 	s.started.Store(true)
-	s.setupCounts = [2]int64{s.counter.read.Load(), s.counter.written.Load()}
+	s.setupCounts = [2]int64{s.demux.Consumed(), s.counter.written.Load()}
 	return nil
 }
 
@@ -474,4 +478,26 @@ func (s *session) info(line string) {
 
 // peerIsServerSender reports whether the other end is a server sending
 // files, which sends its statistics at the end.
+// countCreated counts an entry the client sees itemized as new, by type,
+// as rsync does for --stats.
+func (s *session) countCreated(f *flist.File, iflags uint32) {
+	if s.server || iflags&itemIsNew == 0 {
+		return
+	}
+	st := &s.stats
+	st.NumCreated++
+	switch {
+	case f.IsDir():
+		st.NumCreatedDirs++
+	case f.IsLink():
+		st.NumCreatedLinks++
+	case f.IsDevice():
+		st.NumCreatedDevices++
+	case f.IsSpecial():
+		st.NumCreatedSpecials++
+	default:
+		st.NumCreatedReg++
+	}
+}
+
 func (s *session) peerIsServerSender() bool { return !s.server && !s.sender }

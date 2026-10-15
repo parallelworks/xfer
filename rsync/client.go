@@ -156,6 +156,10 @@ func (c *Client) Run(ctx context.Context, o *Options, operands []string) (*Stats
 		if err != nil {
 			return nil, err
 		}
+		if cmd, ok := t.(*transport.Command); ok && log.lv.debug[debugCmd] > 0 {
+			words := cmd.Argv(host, argv)
+			log.print(fmt.Sprintf("opening connection using: %s  (%d args)\n", strings.Join(words, " "), len(words)))
+		}
 		conn, err = t.Start(ctx, host, argv)
 		if err != nil {
 			return nil, exitErrorf(ExitStartClient, "failed to start remote command: %v", err)
@@ -206,7 +210,7 @@ func (c *Client) Run(ctx context.Context, o *Options, operands []string) (*Stats
 		return stats, &ExitError{Code: code, Err: fmt.Errorf("remote rsync exited with status %d: %w", code, waitErr)}
 	}
 	if !o.ListOnly {
-		writeSummary(stdout, stats, o, time.Now().Unix()-start.Unix())
+		writeSummary(stdout, stats, o, log.lv, time.Now().Unix()-start.Unix())
 	}
 	code := max(s.exitCode, codeForIOError(s.ioErr.Load()))
 	if code != 0 {
@@ -279,7 +283,25 @@ func (s *session) runClient(conn io.ReadWriter, srcs []location, dest location, 
 	if err != nil {
 		return err
 	}
+	flistMsg := func(dir string) {
+		if s.log.lv.info[infoFlist] == 0 {
+			return
+		}
+		if s.inc {
+			s.log.print(dir + " incremental file list\n")
+		} else if dir == "sending" {
+			s.log.print("building file list ... ")
+		} else {
+			s.log.print("receiving file list ... ")
+		}
+	}
+	flistDone := func() {
+		if s.log.lv.info[infoFlist] > 0 && !s.inc {
+			s.log.print("done\n")
+		}
+	}
 	if push {
+		flistMsg("sending")
 		if receiverWantsList(o, s.proto) {
 			if err := s.sendFilterList(filters, true); err != nil {
 				return err
@@ -298,11 +320,13 @@ func (s *session) runClient(conn io.ReadWriter, srcs []location, dest location, 
 			}
 			paths = filesFromPaths(paths[0], names)
 		}
+		s.onListSent = flistDone
 		if _, err := s.sendFileList(paths, localRules(o, filters)); err != nil {
 			return err
 		}
 		return s.sendFiles()
 	}
+	flistMsg("receiving")
 	if err := s.sendFilterList(filters, false); err != nil {
 		return err
 	}
@@ -313,6 +337,7 @@ func (s *session) runClient(conn io.ReadWriter, srcs []location, dest location, 
 	if err != nil {
 		return err
 	}
+	flistDone()
 	if len(files) == 0 {
 		return nil
 	}

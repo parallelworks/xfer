@@ -1,0 +1,10 @@
+sending incremental file list
+a
+d/
+d/b
+d/new
+f/
+f/big
+
+sent 100,419 bytes  received 113 bytes  201,064.00 bytes/sec
+total size is 100,022  speedup is 0.99

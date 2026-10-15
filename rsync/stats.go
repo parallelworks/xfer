@@ -14,15 +14,16 @@ import (
 
 // Stats summarizes a transfer.
 type Stats struct {
-	NumFiles       int64 // entries in the file list
-	NumRegFiles    int64
-	NumDirs        int64
-	NumLinks       int64
-	NumDevices     int64
-	NumSpecials    int64
-	NumCreated     int64
-	NumDeleted     int64
-	NumTransferred int64
+	NumFiles                                                                              int64 // entries in the file list
+	NumRegFiles                                                                           int64
+	NumDirs                                                                               int64
+	NumLinks                                                                              int64
+	NumDevices                                                                            int64
+	NumSpecials                                                                           int64
+	NumCreated                                                                            int64 // entries the transfer created, by type below
+	NumCreatedReg, NumCreatedDirs, NumCreatedLinks, NumCreatedDevices, NumCreatedSpecials int64
+	NumDeleted                                                                            int64
+	NumTransferred                                                                        int64
 
 	TotalSize            int64 // bytes in all files of the list
 	TotalTransferredSize int64 // bytes in the files transferred
@@ -30,10 +31,10 @@ type Stats struct {
 	MatchedData          int64
 	// BlocksTouched counts the distinct 4 KiB regions of files the
 	// receiver wrote. Peers report it from protocol 33 on.
-	BlocksTouched int64
-	FlistSize            int64
-	FlistBuildTime       time.Duration
-	FlistXferTime        time.Duration
+	BlocksTouched  int64
+	FlistSize      int64 // bytes of the file list received; 0 when sending, as rsync reports it
+	FlistBuildTime time.Duration
+	FlistXferTime  time.Duration
 
 	BytesSent     int64 // on the wire
 	BytesReceived int64
@@ -118,26 +119,29 @@ func humanSize(n int64, unit float64) string {
 	return strconv.FormatInt(n, 10)
 }
 
+// printKinds ends a count's line with its breakdown by file type.
+func printKinds(w io.Writer, n [5]int64) {
+	var parts []string
+	for i, name := range []string{"reg", "dir", "link", "dev", "special"} {
+		if n[i] > 0 {
+			parts = append(parts, fmt.Sprintf("%s: %s", name, commaNum(n[i])))
+		}
+	}
+	if len(parts) > 0 {
+		fmt.Fprintf(w, " (%s)", strings.Join(parts, ", "))
+	}
+	fmt.Fprintln(w)
+}
+
 // writeSummary prints the totals shown at the end of a verbose transfer,
 // and the detailed --stats report.
-func writeSummary(w io.Writer, st *Stats, o *Options, wholeSecs int64) {
+func writeSummary(w io.Writer, st *Stats, o *Options, lv levels, wholeSecs int64) {
 	h := o.HumanReadable
-	if o.Stats {
+	if lv.info[infoStats] > 1 {
 		fmt.Fprintf(w, "\nNumber of files: %s", commaNum(st.NumFiles))
-		var parts []string
-		for _, p := range []struct {
-			n    int64
-			name string
-		}{{st.NumRegFiles, "reg"}, {st.NumDirs, "dir"}, {st.NumLinks, "link"}, {st.NumDevices, "dev"}, {st.NumSpecials, "special"}} {
-			if p.n > 0 {
-				parts = append(parts, fmt.Sprintf("%s: %s", p.name, commaNum(p.n)))
-			}
-		}
-		if len(parts) > 0 {
-			fmt.Fprintf(w, " (%s)", strings.Join(parts, ", "))
-		}
-		fmt.Fprintln(w)
-		fmt.Fprintf(w, "Number of created files: %s\n", commaNum(st.NumCreated))
+		printKinds(w, [5]int64{st.NumRegFiles, st.NumDirs, st.NumLinks, st.NumDevices, st.NumSpecials})
+		fmt.Fprintf(w, "Number of created files: %s", commaNum(st.NumCreated))
+		printKinds(w, [5]int64{st.NumCreatedReg, st.NumCreatedDirs, st.NumCreatedLinks, st.NumCreatedDevices, st.NumCreatedSpecials})
 		fmt.Fprintf(w, "Number of deleted files: %s\n", commaNum(st.NumDeleted))
 		fmt.Fprintf(w, "Number of regular files transferred: %s\n", commaNum(st.NumTransferred))
 		fmt.Fprintf(w, "Total file size: %s bytes\n", formatNum(st.TotalSize, h))
@@ -153,7 +157,7 @@ func writeSummary(w io.Writer, st *Stats, o *Options, wholeSecs int64) {
 		fmt.Fprintf(w, "Total bytes sent: %s\n", formatNum(st.BytesSent, h))
 		fmt.Fprintf(w, "Total bytes received: %s\n", formatNum(st.BytesReceived, h))
 	}
-	if o.Verbose == 0 && !o.Stats {
+	if lv.info[infoStats] == 0 {
 		return
 	}
 	// rsync times the run in whole seconds and adds half a second.

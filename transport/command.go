@@ -89,21 +89,8 @@ func ParseShell(s string) ([]string, error) {
 
 // Start implements Transport.
 func (c *Command) Start(ctx context.Context, host string, argv []string) (Conn, error) {
-	shell := c.Shell
-	if len(shell) == 0 {
-		shell = []string{"ssh"}
-	}
-	args := append([]string(nil), shell[1:]...)
-	user, h, ok := strings.Cut(host, "@")
-	if !ok {
-		user, h = "", host
-	}
-	if user != "" {
-		args = append(args, "-l", user)
-	}
-	args = append(args, h, QuoteCommand(argv))
-
-	cmd := exec.Command(shell[0], args...)
+	args := c.Argv(host, argv)
+	cmd := exec.Command(args[0], args[1:]...)
 	if c.Env != nil {
 		cmd.Env = c.Env
 	}
@@ -112,6 +99,31 @@ func (c *Command) Start(ctx context.Context, host string, argv []string) (Conn, 
 		cmd.Stderr = os.Stderr
 	}
 	return startCmd(ctx, cmd)
+}
+
+// Argv returns the command line Start runs: the shell, "-l user" for a
+// "user@host", the host, and argv with each argument quoted for the remote
+// shell. Like rsync, it passes the arguments separately, so a remote shell
+// that does not join them into one command line (such as "docker exec")
+// still gets the right words.
+func (c *Command) Argv(host string, argv []string) []string {
+	shell := c.Shell
+	if len(shell) == 0 {
+		shell = []string{"ssh"}
+	}
+	args := append([]string(nil), shell...)
+	user, h, ok := strings.Cut(host, "@")
+	if !ok {
+		user, h = "", host
+	}
+	if user != "" {
+		args = append(args, "-l", user)
+	}
+	args = append(args, h)
+	for _, a := range argv {
+		args = append(args, QuoteCommand([]string{a}))
+	}
+	return args
 }
 
 // Exec returns a Transport that ignores the host and runs argv locally as a

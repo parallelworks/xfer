@@ -1,0 +1,15 @@
+*deleting   x/y/z
+*deleting   x/y/
+*deleting   x/gone
+*deleting   x/
+*deleting   zz
+.d..t...... ./
+>f+++++++++ a
+cL+++++++++ l -> a
+>f+++++++++ nl\#012x
+cd+++++++++ d/
+>f+++++++++ d/b
+cd+++++++++ d/e/
+cd+++++++++ f/
+>f+++++++++ f/big
+>f+++++++++ f/empty

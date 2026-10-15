@@ -1,0 +1,17 @@
+sending incremental file list
+created directory dst
+delta-transmission disabled for local transfer or --whole-file
+./
+a
+l -> a
+nl\#012x
+d/
+d/b
+d/e/
+f/
+f/big
+f/empty
+total: matches=0  hash_hits=0  false_alarms=0 data=100018
+
+sent 100,470 bytes  received 226 bytes  201,392.00 bytes/sec
+total size is 100,019  speedup is 0.99

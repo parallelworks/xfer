@@ -1,0 +1,11 @@
+created directory dst
+send cd+++++++++ ./
+send >f+++++++++ a
+send cL+++++++++ l -> a
+send >f+++++++++ nl\#012x
+send cd+++++++++ d/
+send >f+++++++++ d/b
+send cd+++++++++ d/e/
+send cd+++++++++ f/
+send >f+++++++++ f/big
+send >f+++++++++ f/empty

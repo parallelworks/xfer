@@ -125,6 +125,16 @@ type Options struct {
 	// whose data the receiver has not yet overwritten, and a block at the
 	// identical offset is preferred so the receiver can skip writing it.
 	Inplace bool
+
+	// Stats, if set, accumulates how the blocks were found.
+	Stats *Stats
+}
+
+// Stats counts the matcher's work: blocks matched, weak checksum hits
+// (candidates whose strong checksum was compared) and false alarms (hits
+// whose strong checksum differed).
+type Stats struct {
+	Matches, HashHits, FalseAlarms int64
 }
 
 // Match reads the new file from r and describes it to e in terms of the
@@ -136,10 +146,21 @@ func Match(r io.Reader, s *Sums, strong StrongFunc, e Emitter) error {
 // MatchWith is Match with options.
 func MatchWith(r io.Reader, s *Sums, strong StrongFunc, e Emitter, opts Options) error {
 	m := matcher{r: r, s: s, strong: strong, e: e, inplace: opts.Inplace}
-	if s.Count() == 0 {
-		return m.allLiteral()
+	if opts.Stats != nil {
+		m.tags = newTags(s)
 	}
-	return m.run()
+	var err error
+	if s.Count() == 0 {
+		err = m.allLiteral()
+	} else {
+		err = m.run()
+	}
+	if st := opts.Stats; st != nil {
+		st.Matches += m.stats.Matches
+		st.HashHits += m.stats.HashHits
+		st.FalseAlarms += m.stats.FalseAlarms
+	}
+	return err
 }
 
 type matcher struct {
@@ -149,6 +170,8 @@ type matcher struct {
 	e      Emitter
 
 	inplace bool
+	stats   Stats
+	tags    *tagSet // with Stats: counts hash hits as rsync does
 	base    int64 // file offset of buf[0]
 
 	buf []byte
@@ -238,9 +261,14 @@ func (m *matcher) run() error {
 	}
 	k := min(bl, len(m.buf))
 	roll.Reset(m.buf[:k])
+	lastLen := s.Len(s.Count() - 1)
 
 	for k > 0 {
 		sum := roll.Sum()
+		// rsync searches the windows no shorter than the last block.
+		if m.tags != nil && k >= lastLen && m.tags.has(sum) {
+			m.stats.HashHits++
+		}
 		if i := m.lookup(ix, sum, k, want); i >= 0 {
 			if m.pos > m.lit {
 				if err := m.e.Literal(m.buf[m.lit:m.pos]); err != nil {
@@ -250,6 +278,7 @@ func (m *matcher) run() error {
 			if err := m.e.Match(i, m.buf[m.pos:m.pos+k]); err != nil {
 				return err
 			}
+			m.stats.Matches++
 			m.pos += k
 			m.lit = m.pos
 			want = i + 1
@@ -278,7 +307,12 @@ func (m *matcher) run() error {
 			m.pos++
 			continue
 		}
-		m.pos = scan(&roll, m.buf, m.pos, k, min(len(m.buf)-k, m.lit+maxPending), ix)
+		end := min(len(m.buf)-k, m.lit+maxPending)
+		if m.tags != nil {
+			m.pos = m.scanCounting(&roll, m.pos, k, end, ix)
+		} else {
+			m.pos = scan(&roll, m.buf, m.pos, k, end, ix)
+		}
 	}
 	if m.lit < len(m.buf) {
 		return m.e.Literal(m.buf[m.lit:])
@@ -306,6 +340,50 @@ func scan(roll *checksum.Roller, buf []byte, pos, k, end int, ix *index) int {
 	return pos
 }
 
+// scanCounting is scan counting the hash hits of the positions it passes
+// over; run counts the one it stops at.
+func (m *matcher) scanCounting(roll *checksum.Roller, pos, k, end int, ix *index) int {
+	buf := m.buf
+	s1, s2 := roll.Parts()
+	n := uint32(k)
+	for {
+		o := uint32(int8(buf[pos]))
+		s1 += uint32(int8(buf[pos+k])) - o
+		s2 += s1 - n*o
+		pos++
+		sum := s1&0xffff | s2<<16
+		if pos >= end || ix.heads[hashWeak(sum)&ix.mask] >= 0 {
+			break
+		}
+		if m.tags.has(sum) {
+			m.stats.HashHits++
+		}
+	}
+	roll.SetParts(s1, s2)
+	return pos
+}
+
+// tagSet records the 16-bit tags of the blocks' weak checksums. rsync's
+// statistics count a hash hit for every position whose tag some block
+// has, whether or not its weak checksum then matches.
+type tagSet [1 << 16 / 64]uint64
+
+func tag(sum uint32) uint32 { return (sum&0xffff + sum>>16) & 0xffff }
+
+func newTags(s *Sums) *tagSet {
+	t := new(tagSet)
+	for _, w := range s.Weak {
+		g := tag(w)
+		t[g/64] |= 1 << (g % 64)
+	}
+	return t
+}
+
+func (t *tagSet) has(sum uint32) bool {
+	g := tag(sum)
+	return t[g/64]&(1<<(g%64)) != 0
+}
+
 // lookup returns the block matching the k-byte window at pos, or -1.
 func (m *matcher) lookup(ix *index, sum uint32, k, want int) int {
 	s := m.s
@@ -322,7 +400,11 @@ func (m *matcher) lookup(ix *index, sum uint32, k, want int) int {
 			m.digest = m.strong(m.digest[:0], m.buf[m.pos:m.pos+k])
 			strong = m.digest[:s.StrongLen]
 		}
-		return bytes.Equal(strong, s.StrongSum(i))
+		if !bytes.Equal(strong, s.StrongSum(i)) {
+			m.stats.FalseAlarms++
+			return false
+		}
+		return true
 	}
 	if m.inplace {
 		// Blocks before the current offset may already be overwritten.

@@ -20,6 +20,7 @@ type fileList struct {
 	files  []*flist.File // sorted
 	parent int32         // index in dirs of the directory these entries are in, or -1
 	seq    int           // 0 for the first list, then 1, 2, ...
+	before int           // entries in the lists before this one
 
 	// Generator bookkeeping (incremental recursion): transfers requested
 	// and not yet finished, and transfers waiting to be redone.
@@ -61,7 +62,7 @@ func newFileLists(inc bool) *fileLists {
 func (fl *fileLists) add(files []*flist.File, parent int32) *fileList {
 	fl.mu.Lock()
 	defer fl.mu.Unlock()
-	l := &fileList{start: fl.next, files: files, parent: parent, seq: fl.added}
+	l := &fileList{start: fl.next, files: files, parent: parent, seq: fl.added, before: fl.total}
 	fl.next += int32(len(files))
 	if fl.inc {
 		fl.next++ // the next list's gap index
@@ -189,4 +190,20 @@ func (fl *fileLists) entriesAfterOldest() int {
 		n += len(fl.lists[i].files)
 	}
 	return n
+}
+
+// toCheck returns, for the progress display, how many entries follow the
+// one with index ndx in the lists so far, how many entries there are, and
+// whether more lists may come.
+func (fl *fileLists) toCheck(ndx int32) (remaining, total int, more bool) {
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+	pos := int(ndx)
+	for _, l := range fl.lists {
+		if ndx >= l.start && ndx < l.start+int32(len(l.files)) {
+			pos = l.before + int(ndx-l.start)
+			break
+		}
+	}
+	return max(0, fl.total-pos-1), fl.total, fl.inc && !fl.eof
 }

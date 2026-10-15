@@ -104,7 +104,21 @@ type Demux struct {
 	// underlying reader. It typically flushes buffered output so the peer
 	// is not left waiting for data we have not sent.
 	BeforeBlock func()
+
+	consumed atomic.Int64
+	data     int64
 }
+
+// DataRead returns the bytes of data Read has returned plus the headers of
+// the data frames they came in: what rsync counts as read for its file
+// list statistics.
+func (d *Demux) DataRead() int64 { return d.data }
+
+// Consumed returns the bytes of the frames the Demux has started on, and
+// before multiplexing the bytes handed out: what the session has
+// processed, which, unlike what has been read ahead, does not depend on
+// timing.
+func (d *Demux) Consumed() int64 { return d.consumed.Load() }
 
 // NewDemux returns a Demux over r, initially not multiplexed.
 func NewDemux(r io.Reader) *Demux {
@@ -129,7 +143,10 @@ func (d *Demux) Read(p []byte) (int, error) {
 	}
 	if !d.enabled {
 		d.maybeBlock()
-		return d.r.Read(p)
+		n, err := d.r.Read(p)
+		d.consumed.Add(int64(n))
+		d.data += int64(n)
+		return n, err
 	}
 	for d.remaining == 0 {
 		if err := d.readFrame(); err != nil {
@@ -139,6 +156,7 @@ func (d *Demux) Read(p []byte) (int, error) {
 	d.maybeBlock()
 	n, err := d.r.Read(p[:min(len(p), d.remaining)])
 	d.remaining -= n
+	d.data += int64(n)
 	if err == io.EOF && d.remaining > 0 {
 		err = io.ErrUnexpectedEOF
 	}
@@ -158,7 +176,11 @@ func (d *Demux) readFrame() error {
 	if tag < 0 {
 		return protoErrorf("unexpected tag %d", tag)
 	}
+	d.consumed.Add(4)
 	if tag == MsgData {
+		d.data += 4
+		// A data frame counts whole once started, like a buffered read.
+		d.consumed.Add(int64(n))
 		d.remaining = n
 		return nil
 	}
@@ -170,6 +192,7 @@ func (d *Demux) readFrame() error {
 		}
 		return err
 	}
+	d.consumed.Add(int64(n))
 	if d.Handle == nil {
 		return protoErrorf("unexpected message tag %d", tag)
 	}
@@ -195,7 +218,9 @@ func NewOut(w io.Writer) *Out {
 func (o *Out) Lock()   { o.mu.Lock() }
 func (o *Out) Unlock() { o.mu.Unlock() }
 
-// SendMsg writes a message after any data already buffered.
+// SendMsg writes a message. Informational messages go out ahead of data
+// still buffered, as rsync's do, since they do not refer to it; the
+// others follow the data, which they may depend on.
 func (o *Out) SendMsg(tag byte, payload []byte) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -203,8 +228,15 @@ func (o *Out) SendMsg(tag byte, payload []byte) error {
 }
 
 func (o *Out) sendMsgLocked(tag byte, payload []byte) error {
-	if err := o.W.Flush(); err != nil {
-		return err
+	switch tag {
+	case MsgInfo, MsgError, MsgErrorXfer, MsgWarning, MsgLog, MsgClient, MsgDeleted:
+		if o.W.err != nil {
+			return o.W.err
+		}
+	default:
+		if err := o.W.Flush(); err != nil {
+			return err
+		}
 	}
 	if err := o.Mux.WriteMsg(tag, payload); err != nil {
 		o.W.err = err

@@ -1,0 +1,7 @@
+>f..t...... a
+*deleting   f/empty
+.d..t...... d/
+>f..t...... d/b
+>f+++++++++ d/new
+.d..t...... f/
+>f..t...... f/big

@@ -24,6 +24,7 @@ func (rv *receiving) generateInc() error {
 	w := s.out
 	deleting := o.Delete != DeleteNone && rv.deleteMode() == DeleteDuring
 
+	rv.deltaNotice()
 	finished := 0 // lists whose NDX_DONE was sent
 	// eachDone sends every NDX_DONE as soon as it is written: once the
 	// lists are walked, each follows the end of a transfer.
@@ -175,9 +176,9 @@ func (rv *receiving) generateInc() error {
 				return err
 			}
 		}
-		// Each list's requests go out together, as rsync sends them.
-		if rv.wrote {
-			rv.wrote = false
+		// rsync's sender sends the lists after the first only once it
+		// starts sending files, so its generator waits, flushing, here.
+		if n == 0 {
 			if err := w.Flush(); err != nil {
 				return err
 			}
@@ -231,6 +232,6 @@ func (rv *receiving) precreateDir(f *flist.File) {
 	if err := rv.root.Mkdir(name, rv.newPerm(f)|0o700); err != nil {
 		return
 	}
-	rv.s.stats.NumCreated++
+	rv.made++
 	rv.precreated[name] = true
 }

@@ -253,10 +253,12 @@ func (s *session) sendFileList(paths []string, filters *filter.List) ([]*flist.F
 	sc := s.newScanner(filters)
 	files := sc.scanArgs(paths)
 	s.stats.FlistBuildTime = time.Since(start)
+	if s.onListSent != nil {
+		s.onListSent()
+	}
 
 	xferStart := time.Now()
 	s.out.Lock()
-	before := s.counter.written.Load() + int64(s.out.W.Buffered())
 	cfg := s.flistConfig()
 	s.enc = flist.NewEncoder(s.out.W, cfg)
 	s.enc.LookupUser, s.enc.LookupGroup = userName, groupName
@@ -266,13 +268,15 @@ func (s *session) sendFileList(paths []string, filters *filter.List) ([]*flist.F
 		s.out.Unlock()
 		return nil, err
 	}
-	err := s.out.W.Flush()
+	var err error
+	if !s.inc {
+		err = s.out.W.Flush()
+	}
 	s.out.Unlock()
 	if err != nil {
 		return nil, err
 	}
 	s.stats.FlistXferTime = time.Since(xferStart)
-	s.stats.FlistSize = s.counter.written.Load() - before
 
 	flist.Sort(files, s.proto)
 	l := s.lists.add(files, s.firstParent(files))
@@ -329,7 +333,7 @@ func (s *session) firstParent(files []*flist.File) int32 {
 // recvFileList reads the sender's first file list and returns it sorted
 // and cleaned, with the sender's uid and gid names.
 func (s *session) recvFileList() (files []*flist.File, users, groups map[uint32]string, err error) {
-	before := s.counter.read.Load()
+	before := s.demux.DataRead()
 	s.dec = flist.NewDecoder(s.in, s.flistConfig())
 	s.lists = newFileLists(s.inc)
 	s.dec.StartList(s.lists.next)
@@ -344,7 +348,7 @@ func (s *session) recvFileList() (files []*flist.File, users, groups map[uint32]
 	if !s.opts.IgnoreErrors {
 		s.ioErr.Or(trailerErr & ioErrValidMask)
 	}
-	s.stats.FlistSize = s.counter.read.Load() - before
+	s.stats.FlistSize = s.demux.DataRead() - before
 	s.lists.add(files, s.firstParent(files))
 	s.countFiles(files)
 	return files, s.dec.Users, s.dec.Groups, nil
@@ -535,7 +539,11 @@ type stdioConn struct {
 // a program can mount it as a subcommand.
 func Main(ctx context.Context, args []string, stdio Stdio) int {
 	o, operands, err := ParseArgs(args)
+	var help *helpError
 	switch {
+	case errors.As(err, &help):
+		io.WriteString(stdio.Stdout, help.text())
+		return 0
 	case errors.Is(err, ErrHelp):
 		io.WriteString(stdio.Stdout, usage)
 		return 0

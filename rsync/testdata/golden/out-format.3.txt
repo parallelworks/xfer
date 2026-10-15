@@ -1,0 +1,6 @@
+send >f..t...... a
+send .d..t...... d/
+send >f..t...... d/b
+send >f+++++++++ d/new
+send .d..t...... f/
+send >f..t...... f/big
