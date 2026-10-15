@@ -19,6 +19,9 @@ With --ssh HOST the "ssh-initial" row also runs: the initial copy of the
 main tree over OpenSSH to and from HOST, which needs GNU rsync, the xfer
 binary (--ssh-xfer) and room for the tree (--ssh-dir) there, and
 key-based login. It measures a real network and is reported, not gated.
+
+The run ends with PASS or FAIL against the gates (RSS_CAP_MB below) and
+exits non-zero on FAIL.
 """
 
 import argparse
@@ -79,6 +82,12 @@ def sample_rss(argv):
         sys.exit("%s failed (%d):\n%s" % (argv, p.returncode, p.stderr.read().decode()))
     return max(peak.values(), default=0)
 
+
+# The gates: xfer's median time is at most GNU's on every gated row (the
+# ssh-initial row measures the network and is not gated), and its peak RSS
+# on the 200k-file tree is at most RSS_CAP_MB.
+RSS_CAP_MB = 12
+RSS_ROWS = ("many-initial", "many-noop")
 
 ROWS = ["initial", "noop", "delta", "checksum", "compress", "delete", "many-initial", "many-noop"]
 
@@ -260,6 +269,18 @@ def main():
         shutil.rmtree(os.path.join(base, "dst-" + impl.name), ignore_errors=True)
     with open(os.path.join(base, "results.json"), "w") as fh:
         json.dump(results, fh, indent=1)
+    failed = []
+    for r in results:
+        name = "%s %s" % (r["row"], r["dir"])
+        if r["row"] != "ssh-initial" and r["xfer"][0] > r["gnu"][0]:
+            failed.append("%s: %.2fs > GNU's %.2fs" % (name, r["xfer"][0], r["gnu"][0]))
+        if r["row"] in RSS_ROWS and r["xfer"][1] > RSS_CAP_MB << 10:
+            failed.append("%s: peak RSS %.1f MB > %d MB" % (name, r["xfer"][1] / 1024, RSS_CAP_MB))
+    print()
+    if failed:
+        print("FAIL\n" + "\n".join("  " + f for f in failed))
+        sys.exit(1)
+    print("PASS: xfer's median <= GNU's on every row; peak RSS on the 200k-file tree <= %d MB" % RSS_CAP_MB)
 
 
 if __name__ == "__main__":
