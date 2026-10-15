@@ -96,7 +96,7 @@ jobs:
             { ${{ matrix.install }} ; } >/dev/null &&
             export XFER_INTEROP_RSYNC="$(command -v rsync)" XFER_INTEROP_XFER=/w/bin/xfer &&
             "$XFER_INTEROP_RSYNC" --version | head -1 &&
-            /w/bin/rsync.test -test.run "TestInterop" -test.v -test.timeout 30m'
+            /w/bin/rsync.test -test.run "TestInterop|TestGolden" -test.v -test.timeout 30m'
 
   interop-openrsync:
     name: interop (macOS openrsync)

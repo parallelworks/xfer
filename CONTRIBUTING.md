@@ -89,6 +89,16 @@ with GNU rsync installed and the data directory on tmpfs:
 GNU rsync and xfer there (`--ssh-xfer`) and key-based login.
 Include before and after numbers in performance changes.
 
+### Soak test
+
+`bench/soak.sh` checks that interrupted transfers resume correctly: it
+builds a large tree (5 GB by default), then over 10 rounds changes the
+source, interrupts a push or pull with `--partial` at a random point
+(SIGINT or SIGKILL), resumes it, and compares SHA-256 manifests of the
+two trees. Run it on Linux with a local disk:
+
+    bench/soak.sh ./xfer /var/tmp/soak [ROUNDS] [SIZE_GB]
+
 ## Commits
 
 - One logical change per commit; tests and code together.
