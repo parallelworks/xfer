@@ -344,7 +344,7 @@ var optionTable = []option{
 		return nil
 	}, unset: func(o *Options) { o.Timeout = 0 }},
 	{long: []string{"contimeout"}, arg: argString, set: func(o *Options, v string) error {
-		n, err := strconv.Atoi(v)
+		n, err := strconv.ParseInt(v, 10, 32)
 		if err != nil || n < 0 {
 			return usagef("invalid --contimeout value %q", v)
 		}
