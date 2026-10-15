@@ -546,8 +546,8 @@ func (c *localConn) Close() error {
 
 // Stdio is the standard streams of a command.
 type Stdio struct {
-	Stdin          io.Reader
-	Stdout, Stderr io.Writer
+	Stdin          io.Reader // the command's standard input
+	Stdout, Stderr io.Writer // the command's standard output and error
 }
 
 type stdioConn struct {

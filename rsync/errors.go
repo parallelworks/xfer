@@ -42,10 +42,12 @@ const (
 
 // ExitError is an error with an rsync exit code.
 type ExitError struct {
-	Code int
-	Err  error
+	Code int   // rsync exit code, such as ExitStreamIO
+	Err  error // underlying error; may be nil
 }
 
+// Error returns the underlying error's message, or a generic message
+// naming the exit code when there is none.
 func (e *ExitError) Error() string {
 	if e.Err == nil {
 		return fmt.Sprintf("rsync error: exit code %d", e.Code)
@@ -53,6 +55,7 @@ func (e *ExitError) Error() string {
 	return e.Err.Error()
 }
 
+// Unwrap returns the underlying error.
 func (e *ExitError) Unwrap() error { return e.Err }
 
 // ExitCode returns the rsync exit code for err: 0 for nil, the code of an

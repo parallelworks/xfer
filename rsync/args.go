@@ -17,6 +17,7 @@ import (
 // UsageError is returned by ParseArgs for command lines rsync would reject.
 type UsageError struct{ msg string }
 
+// Error returns the usage message.
 func (e *UsageError) Error() string { return e.msg }
 
 func usagef(format string, args ...any) error {

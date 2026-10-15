@@ -39,20 +39,20 @@ const maxPath = 1024
 // Config is the part of the session state that shapes file lists. Both
 // sides must agree on it.
 type Config struct {
-	Protocol         int
+	Protocol         int  // negotiated protocol version
 	VarintFlags      bool // CF_VARINT_FLIST_FLAGS
 	SafeFlist        bool // protocol 31, or 30 with CF_SAFE_FLIST
 	ID0Names         bool // CF_ID0_NAMES
-	PreserveUID      bool
-	PreserveGID      bool
-	PreserveLinks    bool
-	PreserveDevices  bool
-	PreserveSpecials bool
-	HardLinks        bool
-	NumericIDs       bool
-	Relative         bool
-	AlwaysChecksum   bool
-	ChecksumLen      int // length of per-file checksums with AlwaysChecksum
+	PreserveUID      bool // -o: entries carry owner ids
+	PreserveGID      bool // -g: entries carry group ids
+	PreserveLinks    bool // -l: entries carry symlink targets
+	PreserveDevices  bool // --devices: entries carry device numbers
+	PreserveSpecials bool // --specials: FIFOs and sockets are listed
+	HardLinks        bool // -H: entries carry hard-link information
+	NumericIDs       bool // --numeric-ids: no user or group names are sent
+	Relative         bool // -R: names keep their leading directories
+	AlwaysChecksum   bool // -c: entries carry whole-file checksums
+	ChecksumLen      int  // length of per-file checksums with AlwaysChecksum
 
 	// IncRecurse is set with incremental recursion: the file list arrives
 	// as several lists, user and group names are sent inline the first

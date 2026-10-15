@@ -20,15 +20,22 @@ import (
 type Algorithm int
 
 const (
+	// None sends no strong checksum.
 	None Algorithm = iota
 	// MD4Old is the protocol 27-29 MD4 variant whose whole-file sum is
 	// seeded with the checksum seed.
 	MD4Old
+	// MD4 is MD4 as used from protocol 30 on.
 	MD4
+	// MD5 is MD5.
 	MD5
+	// SHA1 is SHA-1.
 	SHA1
+	// XXH64 is the 64-bit xxHash.
 	XXH64
+	// XXH3 is the 64-bit XXH3 hash.
 	XXH3
+	// XXH128 is the 128-bit XXH3 hash.
 	XXH128
 )
 
@@ -37,6 +44,7 @@ var names = map[Algorithm]string{
 	XXH64: "xxh64", XXH3: "xxh3", XXH128: "xxh128",
 }
 
+// String returns the algorithm's protocol name.
 func (a Algorithm) String() string { return names[a] }
 
 // Preference lists the algorithms we offer in negotiation, strongest and

@@ -55,6 +55,8 @@ func (m *MuxWriter) Enable() { m.enabled = true }
 // Enabled reports whether multiplexing has started.
 func (m *MuxWriter) Enabled() bool { return m.enabled }
 
+// Write writes p, split into MSG_DATA frames once multiplexing is
+// enabled.
 func (m *MuxWriter) Write(p []byte) (int, error) {
 	if !m.enabled {
 		return m.w.Write(p)
@@ -137,6 +139,9 @@ func (d *Demux) maybeBlock() {
 	}
 }
 
+// Read returns data from MSG_DATA frames, or the raw stream before
+// demultiplexing is enabled, passing other messages to Handle as they
+// arrive.
 func (d *Demux) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
@@ -205,8 +210,8 @@ func (d *Demux) readFrame() error {
 type Out struct {
 	mu       sync.Mutex
 	flushing atomic.Bool
-	Mux      *MuxWriter
-	W        *Writer
+	Mux      *MuxWriter // the framing layer, for messages
+	W        *Writer    // buffered protocol data; use with the lock held
 }
 
 // NewOut returns an Out writing to w.
@@ -215,7 +220,10 @@ func NewOut(w io.Writer) *Out {
 	return &Out{Mux: mux, W: NewWriter(mux)}
 }
 
-func (o *Out) Lock()   { o.mu.Lock() }
+// Lock acquires the right to write through W.
+func (o *Out) Lock() { o.mu.Lock() }
+
+// Unlock releases the lock taken by Lock.
 func (o *Out) Unlock() { o.mu.Unlock() }
 
 // SendMsg writes a message. Informational messages go out ahead of data

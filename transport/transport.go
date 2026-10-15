@@ -22,6 +22,8 @@ import (
 // "cluster", "alice@cluster" or "cluster.example.com". Transports interpret
 // it however makes sense for them.
 type Transport interface {
+	// Start runs argv on host and returns a connection to it. Canceling
+	// ctx while the command runs should stop it.
 	Start(ctx context.Context, host string, argv []string) (Conn, error)
 }
 

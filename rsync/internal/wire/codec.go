@@ -86,16 +86,19 @@ func (r *Reader) Read(p []byte) (int, error) {
 	return r.r.Read(p)
 }
 
+// Byte reads one byte.
 func (r *Reader) Byte() byte {
 	r.ReadFull(r.buf[:1])
 	return r.buf[0]
 }
 
+// Int16 reads a little-endian 16-bit value.
 func (r *Reader) Int16() uint16 {
 	r.ReadFull(r.buf[:2])
 	return binary.LittleEndian.Uint16(r.buf[:2])
 }
 
+// Int32 reads a little-endian 32-bit integer.
 func (r *Reader) Int32() int32 {
 	r.ReadFull(r.buf[:4])
 	return int32(binary.LittleEndian.Uint32(r.buf[:4]))
@@ -220,7 +223,7 @@ type Writer struct {
 	err error
 	buf []byte
 
-	Protocol int
+	Protocol int // protocol version, which selects some encodings
 
 	ndxPrevPos, ndxPrevNeg int32
 }
@@ -283,18 +286,22 @@ func (w *Writer) Write(p []byte) (int, error) {
 	return len(p), w.err
 }
 
+// Bytes writes p unchanged.
 func (w *Writer) Bytes(p []byte) { w.Write(p) }
 
+// Byte writes one byte.
 func (w *Writer) Byte(b byte) {
 	w.reserve(1)
 	w.buf = append(w.buf, b)
 }
 
+// Int16 writes v as a little-endian 16-bit value.
 func (w *Writer) Int16(v uint16) {
 	w.reserve(2)
 	w.buf = binary.LittleEndian.AppendUint16(w.buf, v)
 }
 
+// Int32 writes v as a little-endian 32-bit integer.
 func (w *Writer) Int32(v int32) {
 	w.reserve(4)
 	w.buf = binary.LittleEndian.AppendUint32(w.buf, uint32(v))

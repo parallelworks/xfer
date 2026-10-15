@@ -15,29 +15,29 @@ import (
 // Stats summarizes a transfer.
 type Stats struct {
 	NumFiles                                                                              int64 // entries in the file list
-	NumRegFiles                                                                           int64
-	NumDirs                                                                               int64
-	NumLinks                                                                              int64
-	NumDevices                                                                            int64
-	NumSpecials                                                                           int64
+	NumRegFiles                                                                           int64 // regular files in the list
+	NumDirs                                                                               int64 // directories in the list
+	NumLinks                                                                              int64 // symlinks in the list
+	NumDevices                                                                            int64 // devices in the list
+	NumSpecials                                                                           int64 // FIFOs and sockets in the list
 	NumCreated                                                                            int64 // entries the transfer created, by type below
-	NumCreatedReg, NumCreatedDirs, NumCreatedLinks, NumCreatedDevices, NumCreatedSpecials int64
-	NumDeleted                                                                            int64
-	NumTransferred                                                                        int64
+	NumCreatedReg, NumCreatedDirs, NumCreatedLinks, NumCreatedDevices, NumCreatedSpecials int64 // entries created, by type
+	NumDeleted                                                                            int64 // entries deleted from the destination
+	NumTransferred                                                                        int64 // regular files whose data was sent
 
 	TotalSize            int64 // bytes in all files of the list
 	TotalTransferredSize int64 // bytes in the files transferred
-	LiteralData          int64
-	MatchedData          int64
+	LiteralData          int64 // file bytes sent as literal data
+	MatchedData          int64 // file bytes reconstructed from matched basis blocks
 	// BlocksTouched counts the distinct 4 KiB regions of files the
 	// receiver wrote. Peers report it from protocol 33 on.
 	BlocksTouched  int64
-	FlistSize      int64 // bytes of the file list received; 0 when sending, as rsync reports it
-	FlistBuildTime time.Duration
-	FlistXferTime  time.Duration
+	FlistSize      int64         // bytes of the file list received; 0 when sending, as rsync reports it
+	FlistBuildTime time.Duration // time the sender spent building the file list
+	FlistXferTime  time.Duration // time the sender spent sending the file list
 
 	BytesSent     int64 // on the wire
-	BytesReceived int64
+	BytesReceived int64 // on the wire
 
 	Protocol int // the protocol version the transfer used
 }

@@ -35,34 +35,43 @@ const (
 type File struct {
 	Name                 string // relative wire path, "/"-separated, no trailing "/"
 	Mode                 uint32 // wire mode: type bits and permission bits
-	Size                 int64
-	ModTime              int64 // seconds since the epoch
-	ModNsec              int32
-	UID, GID             uint32
-	RdevMajor, RdevMinor uint32
+	Size                 int64  // length in bytes
+	ModTime              int64  // seconds since the epoch
+	ModNsec              int32  // nanoseconds of ModTime; sent from protocol 31 on
+	UID, GID             uint32 // owner and group ids
+	RdevMajor, RdevMinor uint32 // device number of a device file
 	Link                 string // symlink target
 	Checksum             []byte // with --checksum, the whole-file checksum
-	Flags                uint32
+	Flags                uint32 // local Flag* bits
 
 	// Hard links. With protocol 30+ HLinkIndex is the transmission-order
 	// index of this entry's leader (its own index for a leader); for older
 	// protocols Dev and Ino identify the inode.
 	HLinkIndex int32
-	Dev, Ino   int64
+	Dev, Ino   int64 // device and inode, before protocol 30
 
 	// Sender-only: where to read the file from, and for a directory the
 	// device of its transfer root (for -x when it is listed later).
 	Source  string
-	RootDev uint64
+	RootDev uint64 // device of the transfer root
 }
 
-func (f *File) IsDir() bool     { return f.Mode&TypeMask == TypeDir }
+// IsDir reports whether f is a directory.
+func (f *File) IsDir() bool { return f.Mode&TypeMask == TypeDir }
+
+// IsRegular reports whether f is a regular file.
 func (f *File) IsRegular() bool { return f.Mode&TypeMask == TypeReg }
-func (f *File) IsLink() bool    { return f.Mode&TypeMask == TypeLink }
+
+// IsLink reports whether f is a symbolic link.
+func (f *File) IsLink() bool { return f.Mode&TypeMask == TypeLink }
+
+// IsDevice reports whether f is a character or block device.
 func (f *File) IsDevice() bool {
 	t := f.Mode & TypeMask
 	return t == TypeChar || t == TypeBlock
 }
+
+// IsSpecial reports whether f is a FIFO or a socket.
 func (f *File) IsSpecial() bool {
 	t := f.Mode & TypeMask
 	return t == TypeFIFO || t == TypeSocket

@@ -26,20 +26,20 @@ type Options struct {
 	EightBitOutput bool   // -8
 
 	// What to transfer.
-	Recursive         bool // -r
-	Dirs              bool // -d
-	Relative          bool // -R
-	ImpliedDirs       bool // --no-implied-dirs clears it; defaults to true
-	OneFileSystem     int  // -x, repeatable
-	Existing          bool // --existing
-	IgnoreExisting    bool // --ignore-existing
-	Update            bool // -u
-	MaxSize           int64
-	MinSize           int64
-	PruneEmptyDirs    bool // -m
-	NoIncRecursive    bool // --no-inc-recursive: send the whole file list up front
-	MkPath            bool // --mkpath
-	RemoveSourceFiles bool
+	Recursive         bool  // -r
+	Dirs              bool  // -d
+	Relative          bool  // -R
+	ImpliedDirs       bool  // --no-implied-dirs clears it; defaults to true
+	OneFileSystem     int   // -x, repeatable
+	Existing          bool  // --existing
+	IgnoreExisting    bool  // --ignore-existing
+	Update            bool  // -u
+	MaxSize           int64 // --max-size: skip larger files; 0 is no limit
+	MinSize           int64 // --min-size: skip smaller files; 0 is no limit
+	PruneEmptyDirs    bool  // -m
+	NoIncRecursive    bool  // --no-inc-recursive: send the whole file list up front
+	MkPath            bool  // --mkpath
+	RemoveSourceFiles bool  // --remove-source-files: delete sent files from the source
 
 	// Comparing.
 	Checksum       bool          // -c
@@ -49,70 +49,70 @@ type Options struct {
 	ChecksumChoice string        // --checksum-choice
 
 	// What to preserve.
-	Links           bool // -l
-	CopyLinks       bool // -L
-	CopyUnsafeLinks bool
-	SafeLinks       bool
-	CopyDirlinks    bool // -k
-	KeepDirlinks    bool // -K
-	HardLinks       bool // -H
-	Perms           bool // -p
-	Executability   bool // -E
-	Owner           bool // -o
-	Group           bool // -g
-	Devices         bool // --devices
-	Specials        bool // --specials
-	Times           bool // -t
-	OmitDirTimes    bool // -O
-	OmitLinkTimes   bool // -J
-	NumericIDs      bool // --numeric-ids
-	Super           bool // --super
-	Chmod           []string
+	Links           bool     // -l
+	CopyLinks       bool     // -L
+	CopyUnsafeLinks bool     // --copy-unsafe-links
+	SafeLinks       bool     // --safe-links
+	CopyDirlinks    bool     // -k
+	KeepDirlinks    bool     // -K
+	HardLinks       bool     // -H
+	Perms           bool     // -p
+	Executability   bool     // -E
+	Owner           bool     // -o
+	Group           bool     // -g
+	Devices         bool     // --devices
+	Specials        bool     // --specials
+	Times           bool     // -t
+	OmitDirTimes    bool     // -O
+	OmitLinkTimes   bool     // -J
+	NumericIDs      bool     // --numeric-ids
+	Super           bool     // --super
+	Chmod           []string // --chmod, one entry per option
 
 	// Deleting.
 	Delete         DeleteMode
-	DeleteExcluded bool
-	Force          bool
-	IgnoreErrors   bool
-	MaxDelete      int // 0 means unlimited; rsync's "--max-delete=0" is ErrMaxDelete on any delete and is stored as -1
+	DeleteExcluded bool // --delete-excluded
+	Force          bool // --force: delete non-empty directories replaced by non-directories
+	IgnoreErrors   bool // --ignore-errors: delete even after I/O errors
+	MaxDelete      int  // 0 means unlimited; rsync's "--max-delete=0" is ErrMaxDelete on any delete and is stored as -1
 
 	// Filtering, in command-line order.
 	Filters    []string // each entry is one filter rule in --filter syntax
 	CVSExclude bool     // -C
 
 	// How to write files.
-	WholeFile  *bool // -W / --no-W; nil lets the transfer decide
-	Inplace    bool
-	Partial    bool
-	PartialDir string
+	WholeFile  *bool  // -W / --no-W; nil lets the transfer decide
+	Inplace    bool   // --inplace: update destination files in place
+	Partial    bool   // --partial: keep partially transferred files
+	PartialDir string // --partial-dir; implies Partial
 	TempDir    string // -T
 	Sparse     bool   // -S
 	// Preallocate reserves each file's space before writing it, where the
 	// system supports it (Linux); elsewhere it has no effect.
 	Preallocate  bool
-	DelayUpdates bool
+	DelayUpdates bool // --delay-updates: put updated files in place at the end
 	// OpenNoatime opens files for reading without updating their access
 	// times, where the system supports it (Linux).
 	OpenNoatime bool
 	// Msgs2Stderr sends the messages normally written to standard output
 	// to standard error instead.
 	Msgs2Stderr bool
-	Fsync       bool
-	BlockSize   int // -B; 0 picks per file
+	Fsync       bool // --fsync: sync each file to disk after writing it
+	BlockSize   int  // -B; 0 picks per file
 
 	// BasisDirs are directories holding older copies of the destination
 	// (--compare-dest, --copy-dest, --link-dest), searched in order for a
 	// file the destination lacks. Relative ones are relative to the
 	// destination.
 	BasisDirs []string
-	BasisMode BasisMode
+	BasisMode BasisMode // how a file found in BasisDirs is used
 
 	// FilesFrom names a list of files to transfer, relative to the single
 	// source directory: a local file, "-" for standard input, or
 	// "host:path" / ":path" on the remote host. From0 says its names end
 	// in NUL bytes instead of newlines.
 	FilesFrom string
-	From0     bool
+	From0     bool // -0, --from0
 
 	// Backups of files that are replaced or deleted.
 	Backup    bool   // -b
@@ -123,7 +123,7 @@ type Options struct {
 	Compress       bool   // -z
 	CompressChoice string // --compress-choice
 	CompressLevel  int    // --compress-level; 0 is the algorithm default
-	SkipCompress   string
+	SkipCompress   string // --skip-compress: "/"-separated suffixes; empty and unset uses rsync's list
 
 	// Remote side.
 	Rsh           string        // -e
@@ -133,8 +133,8 @@ type Options struct {
 	ConTimeout    time.Duration // --contimeout: give up if the remote rsync has not started by then
 	BWLimit       int64         // bytes per second; 0 is unlimited
 	Protocol      int           // --protocol; 0 is the newest supported
-	ChecksumSeed  int32
-	RemoteOptions []string // -M
+	ChecksumSeed  int32         // --checksum-seed; 0 picks a random seed
+	RemoteOptions []string      // -M
 
 	DryRun bool // -n
 
@@ -147,7 +147,7 @@ type Options struct {
 
 	// Server mode (set when invoked as the remote half of a transfer).
 	Server bool
-	Sender bool
+	Sender bool // --sender: the server sends files
 
 	// set records which options were given explicitly, keyed by long name.
 	// Info and Debug are --info and --debug arguments, applied in order
@@ -162,12 +162,12 @@ type Options struct {
 type DeleteMode int
 
 const (
-	DeleteNone   DeleteMode = iota
-	DeleteAuto              // --delete: during for protocol 30+, before otherwise
-	DeleteBefore            // --delete-before
-	DeleteDuring            // --delete-during / --del
-	DeleteDelay             // --delete-delay
-	DeleteAfter             // --delete-after
+	DeleteNone   DeleteMode = iota // no deletion
+	DeleteAuto                     // --delete: during for protocol 30+, before otherwise
+	DeleteBefore                   // --delete-before
+	DeleteDuring                   // --delete-during / --del
+	DeleteDelay                    // --delete-delay
+	DeleteAfter                    // --delete-after
 )
 
 // IsSet reports whether the option with the given long name appeared on the

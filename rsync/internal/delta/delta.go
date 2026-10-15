@@ -21,8 +21,8 @@ type Sums struct {
 	Remainder int // length of the last block if shorter than BlockLen, else 0
 	StrongLen int // bytes of each strong checksum kept
 
-	Weak   []uint32
-	Strong []byte // len(Weak)*StrongLen bytes
+	Weak   []uint32 // rolling checksum of each block
+	Strong []byte   // len(Weak)*StrongLen bytes
 }
 
 // Count is the number of blocks.
@@ -134,7 +134,7 @@ type Options struct {
 // (candidates whose strong checksum was compared) and false alarms (hits
 // whose strong checksum differed).
 type Stats struct {
-	Matches, HashHits, FalseAlarms int64
+	Matches, HashHits, FalseAlarms int64 // blocks matched, weak checksum hits, and false alarms
 }
 
 // Match reads the new file from r and describes it to e in terms of the

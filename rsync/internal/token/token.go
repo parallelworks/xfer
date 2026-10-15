@@ -31,13 +31,19 @@ import (
 type Kind int
 
 const (
+	// Simple is the uncompressed encoding.
 	Simple Kind = iota
+	// Zlib is deflate whose history includes matched data (-z).
 	Zlib
+	// Zlibx is deflate whose history holds only literals.
 	Zlibx
+	// Zstd is a single zstd stream for the session.
 	Zstd
+	// LZ4 is LZ4 block compression.
 	LZ4
 )
 
+// String returns the kind's --compress-choice name, "none" for Simple.
 func (k Kind) String() string {
 	switch k {
 	case Simple:
@@ -125,6 +131,8 @@ func DefaultLevel(k Kind) int {
 // uncompressed (--skip-compress). The zlib kinds can; zstd and LZ4 compress
 // every file. CompressFile is called before a file's first token.
 type FileCompressor interface {
+	// CompressFile sets whether the next file's literal data is
+	// compressed.
 	CompressFile(on bool)
 }
 

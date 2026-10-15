@@ -142,6 +142,7 @@ type SyntaxError struct {
 	Rule string // the offending rule text
 }
 
+// Error returns the message followed by the offending rule.
 func (e *SyntaxError) Error() string {
 	return "filter: " + e.Msg + ": " + e.Rule
 }

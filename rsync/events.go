@@ -32,6 +32,7 @@ const (
 	EventError
 )
 
+// String returns a lowercase name for k, such as "item".
 func (k EventKind) String() string {
 	switch k {
 	case EventItem:
@@ -51,7 +52,7 @@ func (k EventKind) String() string {
 // Event is one step of a transfer, reported to Client.Events so that an
 // embedding program can show the transfer its own way.
 type Event struct {
-	Kind EventKind
+	Kind EventKind // what the event reports; it decides which fields are set
 
 	// Name is the entry's path in the transfer (relative to the source
 	// or destination directory, as rsync's output names it), with a

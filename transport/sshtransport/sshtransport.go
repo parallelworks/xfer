@@ -24,7 +24,7 @@ type Dialer func(ctx context.Context, host string) (client *ssh.Client, release 
 
 // Transport is a transport.Transport that runs commands in SSH sessions.
 type Transport struct {
-	Dial Dialer
+	Dial Dialer // returns the SSH client for each command's host
 
 	// Stderr receives the remote command's standard error. If nil,
 	// os.Stderr is used.
