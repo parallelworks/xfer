@@ -163,8 +163,8 @@ server, pushing and pulling) on every scenario in
 
 | Peer | Protocol | Status |
 |---|---|---|
-| GNU rsync 3.5.0, 3.5.1 | 33 | full suite passes |
-| GNU rsync 3.4.4 | 32 | full suite passes |
+| GNU rsync 3.5.1 | 33 | full suite passes |
+| GNU rsync 3.5.0, 3.4.4 | 32 | full suite passes |
 | GNU rsync 3.2.7 | 32 | passes; `--link-dest`/`--copy-dest`/`--compare-dest` skipped with 3.2.7 receiving, since it fails those against itself |
 | GNU rsync 3.1.3 | 31 | full suite passes (MD5 checksums; not in FIPS mode) |
 | openrsync (macOS) | 29 | passes for the options openrsync implements |
@@ -223,9 +223,16 @@ median of 5 runs. The data lives on tmpfs, on an 8-CPU Linux pod:
 | | pull | 0.68 | 0.44 | 0.65 | 8 | 9 |
 
 Peak memory on the 200k-file tree stays within 1.5× of GNU rsync's,
-thanks to incremental recursion. With `--ssh HOST` the harness adds a row
-over real OpenSSH between two machines. That row measures the network
-and is reported, not gated.
+thanks to incremental recursion.
+
+With `--ssh HOST` the harness adds a row over real OpenSSH between two
+machines. That row measures the network as much as rsync, and is
+reported but not gated. Between two pods on different nodes:
+
+| row | dir | GNU s | xfer s | xfer/GNU | GNU RSS MB | xfer RSS MB |
+|---|---|---:|---:|---:|---:|---:|
+| initial copy over OpenSSH | push | 1.97 | 1.67 | 0.85 | 9 | 8 |
+| | pull | 1.72 | 1.64 | 0.96 | 8 | 13 |
 
 ## Development
 
