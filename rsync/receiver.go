@@ -58,6 +58,10 @@ type receiving struct {
 	delLimit  bool
 	followers []int // hard-link followers to link after transfers
 
+	// filterDirs are the directories whose per-directory filter files
+	// are in effect for the delete scan, outermost first.
+	filterDirs []filterDir
+
 	delayed  []string         // --delay-updates: files waiting in the partial directory
 	altBasis map[int32]string // delta bases found in --*-dest directories
 }
@@ -1449,6 +1453,7 @@ func (rv *receiving) deleteInDir(name, wireName string, keep func(wireName strin
 		}
 		return
 	}
+	rv.enterFilterDir(wireName)
 	d, err := rv.root.Open(name)
 	if err != nil {
 		return

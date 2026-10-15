@@ -513,6 +513,33 @@ func expandOpts(opts []string, base string) []string {
 	return out
 }
 
+// mergeDelete puts a per-directory filter file excluding *.tmp in dir, on
+// both sides, plus an excluded file and an extraneous file in the
+// destination.
+func mergeDelete(t *testing.T, src, dst string) {
+	for _, root := range []string{src, dst} {
+		os.MkdirAll(filepath.Join(root, "dir"), 0o755)
+		os.WriteFile(filepath.Join(root, "dir/.rsync-filter"), []byte("- *.tmp\n"), 0o644)
+	}
+	os.WriteFile(filepath.Join(src, "dir/skipped.tmp"), []byte("not sent\n"), 0o644)
+	os.WriteFile(filepath.Join(dst, "dir/keep.tmp"), []byte("protected\n"), 0o644)
+	os.WriteFile(filepath.Join(dst, "dir/gone.txt"), []byte("extraneous\n"), 0o644)
+}
+
+func checkMergeDelete(t *testing.T, src, dst, out string) {
+	if _, err := os.Lstat(filepath.Join(dst, "dir/keep.tmp")); err != nil {
+		t.Errorf("dir/keep.tmp, excluded by dir/.rsync-filter, was deleted: %v", err)
+	}
+	for _, name := range []string{"dir/gone.txt", "dir/skipped.tmp"} {
+		if _, err := os.Lstat(filepath.Join(dst, name)); err == nil {
+			t.Errorf("%s exists", name)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "dir/nested/deep.txt")); err != nil {
+		t.Error(err)
+	}
+}
+
 func mustRead(t *testing.T, p string) []byte {
 	b, err := os.ReadFile(p)
 	if err != nil {
@@ -574,6 +601,8 @@ var scenarios = []scenario{
 	{name: "files-from", opts: []string{"-a", "--files-from={base}/list"}, prepare: filesFromList, check: checkFilesFrom},
 	{name: "files-from0", opts: []string{"-a", "--from0", "--files-from={base}/list0"}, prepare: filesFromList, check: checkFilesFrom},
 	{name: "files-from-remote", opts: []string{"-a", "--files-from=:{base}/list"}, prepare: filesFromList, check: checkFilesFrom},
+	{name: "merge-delete", opts: []string{"-a", "-F", "--delete"}, prepare: mergeDelete, check: checkMergeDelete},
+	{name: "merge-delete-after", opts: []string{"-a", "-F", "--delete-after"}, prepare: mergeDelete, check: checkMergeDelete},
 	{name: "sparse", opts: []string{"-a", "-S"}, prepare: sparseFile, check: checkSparse},
 	{name: "timeout", opts: []string{"-a", "--timeout=1", "--delete", "--no-W"}, prepare: staleDest, times: true},
 	{name: "copy-unsafe-links", opts: []string{"-a", "--copy-unsafe-links"}, prepare: unsafeLinks, check: checkUnsafeLinks},
@@ -666,7 +695,7 @@ func TestInterop(t *testing.T) {
 					if pr.client.name == "openrsync" || pr.server.name == "openrsync" {
 						if slices.ContainsFunc(sc.opts, func(o string) bool {
 							return strings.HasPrefix(o, "--compress-choice") || strings.HasPrefix(o, "--checksum-choice") ||
-								o == "-s" || o == "--inplace" || o == "--delete-after" || o == "--no-inc-recursive" || o == "--delay-updates" || o == "-b" || strings.HasPrefix(o, "--files-from=:") || strings.HasPrefix(o, "--backup-dir") || o == "--copy-unsafe-links" || strings.HasPrefix(o, "--protocol")
+								o == "-s" || o == "--inplace" || o == "--delete-after" || o == "--no-inc-recursive" || o == "--delay-updates" || o == "-b" || o == "-F" || strings.HasPrefix(o, "--files-from=:") || strings.HasPrefix(o, "--backup-dir") || o == "--copy-unsafe-links" || strings.HasPrefix(o, "--protocol")
 						}) {
 							t.Skip("not supported by openrsync")
 						}
