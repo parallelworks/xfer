@@ -575,7 +575,7 @@ func TestInterop(t *testing.T) {
 					if pr.client.name == "openrsync" || pr.server.name == "openrsync" {
 						if slices.ContainsFunc(sc.opts, func(o string) bool {
 							return strings.HasPrefix(o, "--compress-choice") || strings.HasPrefix(o, "--checksum-choice") ||
-								o == "-s" || o == "--inplace" || o == "--delete-after" || o == "--no-inc-recursive" || o == "--delay-updates" || o == "--copy-unsafe-links" || strings.HasPrefix(o, "--protocol")
+								o == "-s" || o == "--inplace" || o == "--delete-after" || o == "--no-inc-recursive" || o == "--delay-updates" || o == "-b" || strings.HasPrefix(o, "--backup-dir") || o == "--copy-unsafe-links" || strings.HasPrefix(o, "--protocol")
 						}) {
 							t.Skip("not supported by openrsync")
 						}
