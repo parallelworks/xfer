@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"syscall"
 
@@ -50,6 +51,12 @@ func main() {
 			usage()
 			os.Exit(1)
 		}
+	}
+	// The live heap of a transfer is small (a few file lists and
+	// buffers), so the collector's default target would leave the heap
+	// mostly garbage. Collect more often unless GOGC says otherwise.
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(25)
 	}
 	stopProfile := startProfile()
 	code := rsync.Main(ctx, args, rsync.Stdio{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr})
