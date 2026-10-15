@@ -747,6 +747,16 @@ func TestInterop(t *testing.T) {
 							t.Skip("openrsync sender fails on dangling safe symlinks")
 						}
 					}
+					receiver := pr.client
+					if dir == "push" {
+						receiver = pr.server
+					}
+					if strings.HasSuffix(sc.name, "-dest") && receiver.name == "gnu" && strings.Contains(receiver.about, "version 3.2.") {
+						// rsync 3.2's receiver rejects the delta it gets
+						// against a basis in an alternate directory ("failed
+						// verification"), even from rsync 3.2 itself.
+						t.Skip("rsync 3.2 fails this as a receiver, against itself too")
+					}
 					if fips140.Enabled() && !fipsCapable(sc, pr.client, pr.server) {
 						// xfer refuses MD4/MD5 by design in FIPS mode;
 						// TestFIPS covers the refusal.
