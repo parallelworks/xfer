@@ -109,7 +109,8 @@ var optionTable = []option{
 	boolOpt("omit-dir-times", 'O', func(o *Options) *bool { return &o.OmitDirTimes }),
 	boolOpt("omit-link-times", 'J', func(o *Options) *bool { return &o.OmitLinkTimes }),
 	{long: []string{"modify-window"}, short: '@', arg: argString, noNeg: true, set: func(o *Options, v string) error {
-		n, err := strconv.Atoi(v)
+		// rsync keeps the window in an int; larger values are rejected.
+		n, err := strconv.ParseInt(v, 10, 32)
 		if err != nil {
 			return usagef("invalid --modify-window value %q", v)
 		}
@@ -335,7 +336,7 @@ var optionTable = []option{
 	unsupported("groupmap", 0, argString),
 	unsupported("chown", 0, argString),
 	{long: []string{"timeout"}, arg: argString, set: func(o *Options, v string) error {
-		n, err := strconv.Atoi(v)
+		n, err := strconv.ParseInt(v, 10, 32)
 		if err != nil || n < 0 {
 			return usagef("invalid --timeout value %q", v)
 		}
@@ -494,6 +495,12 @@ func ParseArgs(args []string) (*Options, []string, error) {
 				}
 				break
 			}
+		case o.Server:
+			// A client puts every option before the "." that starts
+			// the server's operands; what follows are paths, even
+			// ones that begin with '-'.
+			operands = append(operands, args[i:]...)
+			return o, operands, o.finish()
 		default:
 			operands = append(operands, a)
 		}
