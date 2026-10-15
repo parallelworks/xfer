@@ -1012,12 +1012,11 @@ func (rv *receiving) touchUpDir(f *flist.File) {
 		return
 	}
 	cur := wireMode(fi.Mode()) & 0o7777
-	want := cur &^ 0o700
+	want := cur
 	switch {
 	case o.Perms:
 		want = f.Perm()
 	default:
-		want = cur
 		if rv.s.stats.NumCreated > 0 && cur&0o700 == 0o700 && f.Perm()&0o700 != 0o700 {
 			// Directory we made writable on creation.
 			want = (f.Perm() &^ rv.umask) & 0o7777

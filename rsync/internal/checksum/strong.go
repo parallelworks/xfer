@@ -12,7 +12,8 @@ import (
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/zeebo/xxh3"
-	"golang.org/x/crypto/md4" //nolint:staticcheck // the rsync protocol requires MD4 before protocol 30
+	//lint:ignore SA1019 the rsync protocol requires MD4 before protocol 30
+	"golang.org/x/crypto/md4"
 )
 
 // Algorithm identifies a strong checksum algorithm.

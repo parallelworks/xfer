@@ -186,6 +186,7 @@ func (s *session) handshake(clientInfo string) error {
 			w.Flush()
 			s.compat = uint32(r.Varint())
 			if s.compat&cfIncRecurse != 0 && !allowIncRecurse(s.opts, s.sender) {
+				//lint:ignore ST1005 the message matches rsync's
 				return &ExitError{Code: ExitSyntax, Err: errors.New("Incompatible options specified for inc-recursive connection.")}
 			}
 		}
