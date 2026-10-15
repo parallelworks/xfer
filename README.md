@@ -205,25 +205,31 @@ median of 5 runs. The data lives on tmpfs, on an 8-CPU Linux pod:
 
 | row | dir | GNU s | xfer s | xfer/GNU | GNU RSS MB | xfer RSS MB |
 |---|---|---:|---:|---:|---:|---:|
-| initial: 20k files + 4×256 MB | push | 0.83 | 0.74 | 0.89 | 8 | 8 |
-| | pull | 0.80 | 0.74 | 0.93 | 8 | 9 |
-| no-op resync | push | 0.11 | 0.05 | 0.49 | 8 | 8 |
-| | pull | 0.09 | 0.05 | 0.60 | 8 | 8 |
-| delta: 1 MB changed per big file | push | 0.73 | 0.46 | 0.64 | 8 | 9 |
-| | pull | 0.71 | 0.46 | 0.65 | 8 | 9 |
-| `-c` | push | 0.50 | 0.33 | 0.64 | 8 | 12 |
-| | pull | 0.49 | 0.32 | 0.66 | 8 | 11 |
-| `-z` (zstd), compressible text | push | 1.26 | 1.06 | 0.85 | 8 | 24 |
-| | pull | 1.23 | 1.07 | 0.87 | 8 | 24 |
-| `--delete`, 5k removed | push | 0.15 | 0.10 | 0.68 | 8 | 8 |
-| | pull | 0.13 | 0.10 | 0.77 | 8 | 8 |
-| 200k files, initial copy | push | 4.29 | 3.74 | 0.87 | 8 | 12 |
-| | pull | 4.29 | 3.75 | 0.87 | 8 | 12 |
-| 200k files, no-op | push | 0.69 | 0.43 | 0.62 | 8 | 9 |
-| | pull | 0.68 | 0.44 | 0.65 | 8 | 9 |
+| initial: 20k files + 4×256 MB | push | 0.83 | 0.73 | 0.88 | 2 | 6 |
+| | pull | 0.80 | 0.73 | 0.91 | 2 | 8 |
+| no-op resync | push | 0.11 | 0.05 | 0.50 | 2 | 8 |
+| | pull | 0.09 | 0.05 | 0.62 | 2 | 8 |
+| delta: 1 MB changed per big file | push | 0.73 | 0.47 | 0.64 | 3 | 9 |
+| | pull | 0.71 | 0.45 | 0.64 | 3 | 9 |
+| `-c` | push | 0.51 | 0.33 | 0.65 | 2 | 9 |
+| | pull | 0.49 | 0.33 | 0.67 | 2 | 12 |
+| `-z` (zstd), compressible text | push | 1.25 | 1.06 | 0.85 | 5 | 24 |
+| | pull | 1.24 | 1.08 | 0.87 | 5 | 24 |
+| `--delete`, 5k removed | push | 0.15 | 0.10 | 0.68 | 2 | 6 |
+| | pull | 0.13 | 0.10 | 0.79 | 2 | 6 |
+| 200k files, initial copy | push | 4.32 | 3.71 | 0.86 | 2 | 9 |
+| | pull | 4.29 | 3.72 | 0.87 | 2 | 11 |
+| 200k files, no-op | push | 0.70 | 0.43 | 0.62 | 2 | 9 |
+| | pull | 0.68 | 0.44 | 0.64 | 2 | 9 |
 
-Peak memory on the 200k-file tree stays within 1.5× of GNU rsync's,
-thanks to incremental recursion.
+RSS is the peak resident memory of the larger of the client and server
+processes, each measured on its own with GNU time. GNU rsync, a C
+program, peaks at about 2 MB. xfer peaks at 6 to 12 MB, 24 MB with zstd.
+Most of that is the Go runtime's fixed cost: about 3.7 MB of the binary's
+code and tables are paged in, the garbage collector's smallest heap target
+is 4 MB, and the runtime's own metadata adds about 1 MB. Memory does not
+grow with the size of the tree, thanks to incremental recursion: the 200k-file
+tree peaks within a few MB of the 20k-file one.
 
 With `--ssh HOST` the harness adds a row over real OpenSSH between two
 machines. That row measures the network as much as rsync, and is
@@ -231,8 +237,11 @@ reported but not gated. Between two pods on different nodes:
 
 | row | dir | GNU s | xfer s | xfer/GNU | GNU RSS MB | xfer RSS MB |
 |---|---|---:|---:|---:|---:|---:|
-| initial copy over OpenSSH | push | 1.97 | 1.67 | 0.85 | 9 | 8 |
-| | pull | 1.72 | 1.64 | 0.96 | 8 | 13 |
+| initial copy over OpenSSH | push | 1.97 | 1.66 | 0.84 | 8 | 9 |
+| | pull | 1.71 | 1.64 | 0.96 | 8 | 13 |
+
+The RSS figures for this row cover only the local process, and include a
+floor of about 8 MB from the Python harness that starts it.
 
 ## Development
 
