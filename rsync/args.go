@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -671,6 +672,15 @@ func ParseSize(s string, unit int64) (int64, error) {
 		for range exp {
 			mult *= base
 		}
+	}
+	if !strings.Contains(num, ".") {
+		// Whole numbers stay exact, beyond what a float64 holds.
+		n, err := strconv.ParseInt(num, 10, 64)
+		m := int64(mult)
+		if err != nil || (m != 0 && n > (math.MaxInt64-1)/m) {
+			return 0, usagef("invalid size %q", orig)
+		}
+		return n*m + adjust, nil
 	}
 	return int64(f*mult) + adjust, nil
 }
