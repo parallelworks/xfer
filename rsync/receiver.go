@@ -918,6 +918,9 @@ func (rv *receiving) deleteForReplace(name string, fi fs.FileInfo) error {
 	if rv.o.DryRun || rv.root == nil {
 		return nil
 	}
+	if rv.o.backups() {
+		return rv.backup(name, fi)
+	}
 	if fi.IsDir() {
 		if rv.o.Force || rv.o.Delete != DeleteNone {
 			return rv.root.RemoveAll(name)
@@ -1151,6 +1154,11 @@ func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr tok
 	)
 	if inplace {
 		tmpName = name
+		if o.backups() {
+			if err := rv.backupCopy(name); err != nil {
+				s.sendError("backup of %q failed: %s", name, errnoText(err))
+			}
+		}
 		tmp, openErr = rv.root.OpenFile(name, os.O_RDWR|os.O_CREATE, 0o600)
 		if openErr == nil {
 			basis = tmp
@@ -1321,6 +1329,11 @@ func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr tok
 		rv.delayed = append(rv.delayed, name)
 	} else {
 		if !inplace {
+			if o.backups() {
+				if err := rv.backupExisting(name); err != nil {
+					s.sendError("backup of %q failed: %s", name, errnoText(err))
+				}
+			}
 			if err := rv.root.Rename(tmpName, name); err != nil {
 				rv.root.Remove(tmpName)
 				s.sendError("rename %q -> %q: %s", tmpName, name, errnoText(err))
@@ -1458,7 +1471,12 @@ func (rv *receiving) deleteEntry(local, wn string, e fs.DirEntry) {
 	}
 	if !o.DryRun {
 		var err error
-		if kind == 1 {
+		if o.backups() {
+			var fi fs.FileInfo
+			if fi, err = rv.root.Lstat(local); err == nil {
+				err = rv.backup(local, fi)
+			}
+		} else if kind == 1 {
 			err = rv.root.RemoveAll(local)
 		} else {
 			err = rv.root.Remove(local)
@@ -1600,6 +1618,11 @@ func (rv *receiving) finishDelayed() {
 	dirs := map[string]bool{}
 	for _, name := range rv.delayed {
 		p, _ := rv.partialPath(name)
+		if rv.o.backups() {
+			if err := rv.backupExisting(name); err != nil {
+				rv.s.sendError("backup of %q failed: %s", name, errnoText(err))
+			}
+		}
 		if err := rv.root.Rename(p, name); err != nil {
 			rv.s.sendError("rename %q -> %q: %s", p, name, errnoText(err))
 			continue

@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -315,15 +316,32 @@ func buildFilters(o *Options) (*filter.List, error) {
 
 // localRules adds the rules each side applies on its own without sending
 // them: a relative --partial-dir is neither transferred nor deleted.
+//
+// Backups made beside their files (-b without --backup-dir) are protected
+// from deletion, and so is a backup directory inside the destination.
 func localRules(o *Options, l *filter.List) *filter.List {
-	if o.PartialDir == "" || filepath.IsAbs(o.PartialDir) {
+	var extra []string
+	if o.PartialDir != "" && !filepath.IsAbs(o.PartialDir) {
+		extra = append(extra, "- "+strings.TrimSuffix(o.PartialDir, "/")+"/")
+	}
+	if o.backups() {
+		if o.BackupDir == "" {
+			extra = append(extra, "P *"+o.BackupSuffix())
+		} else if !filepath.IsAbs(o.BackupDir) {
+			extra = append(extra, "P /"+strings.Trim(path.Clean(o.BackupDir), "/")+"/")
+		}
+	}
+	if len(extra) == 0 {
 		return l
 	}
-	rs, err := filter.ParseRule("- " + strings.TrimSuffix(o.PartialDir, "/") + "/")
-	if err != nil {
-		return l
+	// First, so the user's rules cannot override them.
+	var rules []filter.Rule
+	for _, r := range extra {
+		if rs, err := filter.ParseRule(r); err == nil {
+			rules = append(rules, rs...)
+		}
 	}
-	return filter.NewList(append(l.Rules(), rs...))
+	return filter.NewList(append(rules, l.Rules()...))
 }
 
 // remoteCommand builds the command that starts the server half. With
@@ -524,6 +542,15 @@ func serverArgs(o *Options, push bool) []string {
 	}
 	if o.ChecksumSeed != 0 {
 		args = append(args, "--checksum-seed="+strconv.Itoa(int(o.ChecksumSeed)))
+	}
+	if push && o.backups() {
+		args = append(args, "--backup")
+		if o.BackupDir != "" {
+			args = append(args, "--backup-dir="+o.BackupDir)
+		}
+		if o.Suffix != "" || o.set["suffix"] {
+			args = append(args, "--suffix="+o.Suffix)
+		}
 	}
 	if push {
 		switch {

@@ -88,6 +88,11 @@ type Options struct {
 	Fsync        bool
 	BlockSize    int // -B; 0 picks per file
 
+	// Backups of files that are replaced or deleted.
+	Backup    bool   // -b
+	BackupDir string // --backup-dir; implies Backup
+	Suffix    string // --suffix; see BackupSuffix
+
 	// Compression.
 	Compress       bool   // -z
 	CompressChoice string // --compress-choice
@@ -137,3 +142,17 @@ const (
 // IsSet reports whether the option with the given long name appeared on the
 // command line.
 func (o *Options) IsSet(long string) bool { return o.set[long] }
+
+// BackupSuffix is the suffix backups get: Suffix if it was given, else "~"
+// without a backup directory and nothing with one.
+func (o *Options) BackupSuffix() string {
+	if o.Suffix != "" || o.set["suffix"] {
+		return o.Suffix
+	}
+	if o.BackupDir != "" {
+		return ""
+	}
+	return "~"
+}
+
+func (o *Options) backups() bool { return o.Backup || o.BackupDir != "" }

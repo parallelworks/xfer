@@ -317,9 +317,12 @@ var optionTable = []option{
 		o.BWLimit = n
 		return err
 	}, unset: func(o *Options) { o.BWLimit = 0 }},
-	unsupported("backup", 'b', argNone),
-	unsupported("backup-dir", 0, argString),
-	unsupported("suffix", 0, argString),
+	boolOpt("backup", 'b', func(o *Options) *bool { return &o.Backup }),
+	{long: []string{"backup-dir"}, arg: argString, noNeg: true, set: func(o *Options, v string) error {
+		o.BackupDir, o.Backup = v, true
+		return nil
+	}},
+	strOpt("suffix", 0, func(o *Options) *string { return &o.Suffix }),
 	boolOpt("list-only", 0, func(o *Options) *bool { return &o.ListOnly }),
 	unsupported("read-batch", 0, argString),
 	unsupported("write-batch", 0, argString),
@@ -529,6 +532,12 @@ func (o *Options) finish() error {
 	}
 	if o.Inplace && o.DelayUpdates {
 		return usagef("--inplace cannot be used with --delay-updates")
+	}
+	if o.backups() && o.BackupDir == "" && o.BackupSuffix() == "" {
+		return usagef("--suffix cannot be empty without --backup-dir")
+	}
+	if strings.Contains(o.Suffix, "/") {
+		return usagef("--suffix cannot contain slashes: %s", o.Suffix)
 	}
 	if o.DelayUpdates {
 		// Updates wait in the partial directory until the end.

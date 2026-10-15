@@ -398,6 +398,43 @@ func checkSparse(t *testing.T, src, dst, out string) {
 	}
 }
 
+func checkBackup(t *testing.T, src, dst, out string) {
+	if d := diffSnapshots(snapshot(t, src, true, false), snapshot(t, dst, true, false)); !strings.Contains(d, "big.bin~") || strings.Contains(d, "big.bin:") {
+		t.Errorf("want the source plus backups:\n%s", d)
+	}
+	for _, name := range []string{"big.bin~", "extra-file~", "extra-dir/sub/x~"} {
+		if _, err := os.Lstat(filepath.Join(dst, name)); err != nil {
+			t.Errorf("backup %s: %v", name, err)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "extra-file")); err == nil {
+		t.Error("extra-file was not deleted")
+	}
+}
+
+func checkBackupDir(t *testing.T, src, dst, out string) {
+	if d := diffSnapshots(snapshot(t, src, true, false), snapshot(t, dst, true, false)); d != "" {
+		t.Errorf("destination differs:\n%s", d)
+	}
+	bak := filepath.Join(filepath.Dir(dst), "bak")
+	for _, name := range []string{"big.bin", "extra-file", "extra-dir/sub/x"} {
+		if _, err := os.Lstat(filepath.Join(bak, name)); err != nil {
+			t.Errorf("backup %s: %v", name, err)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(bak, "big.bin")); bytes.Equal(b, mustRead(t, filepath.Join(src, "big.bin"))) {
+		t.Error("backup of big.bin holds the new contents")
+	}
+}
+
+func mustRead(t *testing.T, p string) []byte {
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 func manyFiles(t *testing.T, src, dst string) {
 	big := make([]byte, 24<<20)
 	rand.NewChaCha8([32]byte{1}).Read(big)
@@ -443,6 +480,8 @@ var scenarios = []scenario{
 	{name: "many-files", opts: []string{"-a"}, prepare: manyFiles, times: true},
 	{name: "delay-updates", opts: []string{"-a", "--delay-updates", "--delete", "--no-W"}, prepare: staleDest, times: true, perms: true},
 	{name: "delay-updates-hardlinks", opts: []string{"-aH", "--delay-updates"}, prepare: addHardlinks, times: true},
+	{name: "backup", opts: []string{"-a", "-b", "--delete", "--no-W"}, prepare: staleDest, check: checkBackup},
+	{name: "backup-dir", opts: []string{"-a", "--backup-dir=../bak", "--delete", "--no-W"}, prepare: staleDest, check: checkBackupDir},
 	{name: "sparse", opts: []string{"-a", "-S"}, prepare: sparseFile, check: checkSparse},
 	{name: "timeout", opts: []string{"-a", "--timeout=1", "--delete", "--no-W"}, prepare: staleDest, times: true},
 	{name: "copy-unsafe-links", opts: []string{"-a", "--copy-unsafe-links"}, prepare: unsafeLinks, check: checkUnsafeLinks},
