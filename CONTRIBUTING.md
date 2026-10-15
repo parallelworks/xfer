@@ -1,7 +1,7 @@
 # Contributing to xfer
 
 xfer is a clean-room, Apache-2.0 implementation of rsync, wire-compatible
-with GNU rsync (protocols 27 to 31) and openrsync. Read the clean-room
+with GNU rsync (protocols 27 to 33) and openrsync. Read the clean-room
 policy below before writing any code.
 
 ## Building
@@ -52,6 +52,20 @@ CI covers GNU rsync 3.1.3, 3.2.7, 3.4.4, 3.5.0 and 3.5.1 and macOS
 openrsync. When you change the protocol, test against at least the oldest
 and newest of these.
 
+### Output
+
+`TestGolden` (in `rsync/golden_test.go`) holds xfer's `-v`, `-vv`, `-i`,
+`--stats`, `--progress`, `--out-format` and `--delete` output to rsync's,
+recorded from GNU rsync 3.5.1 in `rsync/testdata/golden`. Timing-dependent
+parts are masked, and byte counts are compared with a small tolerance,
+since rsync's own counts vary with the framing of its output. To
+regenerate the recordings on Linux with rsync 3.5.1:
+
+    XFER_GOLDEN_UPDATE=1 XFER_INTEROP_RSYNC=/usr/bin/rsync go test -run '^TestGolden$' ./rsync
+
+`TestGoldenLive` compares against a live rsync of protocol 33 in local,
+push and pull transfers whenever `XFER_INTEROP_RSYNC` names one.
+
 ### Fuzzing
 
     grep -rn '^func Fuzz' --include='*_test.go' .
@@ -71,6 +85,8 @@ with GNU rsync installed and the data directory on tmpfs:
     python3 bench/bench.py --xfer ./xfer --dir /mem/bench [--runs N] [--only ROW]
 
 `--only` may be repeated; the rows are listed at the top of the script.
+`--ssh HOST` adds a row over real OpenSSH to another machine, which needs
+GNU rsync and xfer there (`--ssh-xfer`) and key-based login.
 Include before and after numbers in performance changes.
 
 ## Commits
