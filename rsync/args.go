@@ -523,6 +523,14 @@ func (o *Options) finish() error {
 	if o.Inplace && o.DelayUpdates {
 		return usagef("--inplace cannot be used with --delay-updates")
 	}
+	if o.DelayUpdates {
+		// Updates wait in the partial directory until the end.
+		if o.PartialDir == "" {
+			o.PartialDir = ".~tmp~"
+		} else if strings.HasPrefix(o.PartialDir, "/") {
+			return usagef("--delay-updates requires a relative --partial-dir")
+		}
+	}
 	if o.CopyLinks {
 		o.Links = false
 	}

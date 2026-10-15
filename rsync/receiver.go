@@ -57,6 +57,8 @@ type receiving struct {
 	deletes   int
 	delLimit  bool
 	followers []int // hard-link followers to link after transfers
+
+	delayed []string // --delay-updates: files waiting in the partial directory
 }
 
 // recvEvent is the receiver telling the generator something: a file to
@@ -1060,6 +1062,10 @@ func (rv *receiving) receive() error {
 				continue
 			}
 			phase++
+			if phase == 2 {
+				// The redo phase is over: every update is complete.
+				rv.finishDelayed()
+			}
 			if phase > maxPhase {
 				break
 			}
@@ -1304,15 +1310,26 @@ func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr tok
 	}
 	tmp.Close()
 	tmp = nil
-	if !inplace {
-		if err := rv.root.Rename(tmpName, name); err != nil {
+	if o.DelayUpdates {
+		p, _ := rv.partialPath(name)
+		rv.root.Mkdir(path.Dir(p), 0o700)
+		if err := rv.root.Rename(tmpName, p); err != nil {
 			rv.root.Remove(tmpName)
-			s.sendError("rename %q -> %q: %s", tmpName, name, errnoText(err))
+			s.sendError("rename %q -> %q: %s", tmpName, p, errnoText(err))
 			return false, nil
 		}
-	}
-	if o.PartialDir != "" {
-		rv.removePartial(name)
+		rv.delayed = append(rv.delayed, name)
+	} else {
+		if !inplace {
+			if err := rv.root.Rename(tmpName, name); err != nil {
+				rv.root.Remove(tmpName)
+				s.sendError("rename %q -> %q: %s", tmpName, name, errnoText(err))
+				return false, nil
+			}
+		}
+		if o.PartialDir != "" {
+			rv.removePartial(name)
+		}
 	}
 	s.stats.NumTransferred++
 	s.stats.TotalTransferredSize += f.Size
@@ -1575,6 +1592,24 @@ func (rv *receiving) openBasis(name string, exists bool) *os.File {
 	}
 	f, _ := rv.root.Open(name)
 	return f
+}
+
+// finishDelayed moves the files --delay-updates held back into place and
+// removes the partial directories that leaves empty.
+func (rv *receiving) finishDelayed() {
+	dirs := map[string]bool{}
+	for _, name := range rv.delayed {
+		p, _ := rv.partialPath(name)
+		if err := rv.root.Rename(p, name); err != nil {
+			rv.s.sendError("rename %q -> %q: %s", p, name, errnoText(err))
+			continue
+		}
+		dirs[path.Dir(p)] = true
+	}
+	for d := range dirs {
+		rv.root.Remove(d)
+	}
+	rv.delayed = nil
 }
 
 // savePartial keeps the temp file of an interrupted transfer, at the

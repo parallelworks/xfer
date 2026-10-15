@@ -441,6 +441,8 @@ var scenarios = []scenario{
 	{name: "lz4", needs: "lz4", opts: []string{"-a", "--compress-choice=lz4", "--no-W"}, prepare: staleDest, times: true, minProto: 31,
 		check: checkIgnoring("extra-file", "extra-dir", "extra-dir/sub", "extra-dir/sub/x")},
 	{name: "many-files", opts: []string{"-a"}, prepare: manyFiles, times: true},
+	{name: "delay-updates", opts: []string{"-a", "--delay-updates", "--delete", "--no-W"}, prepare: staleDest, times: true, perms: true},
+	{name: "delay-updates-hardlinks", opts: []string{"-aH", "--delay-updates"}, prepare: addHardlinks, times: true},
 	{name: "sparse", opts: []string{"-a", "-S"}, prepare: sparseFile, check: checkSparse},
 	{name: "timeout", opts: []string{"-a", "--timeout=1", "--delete", "--no-W"}, prepare: staleDest, times: true},
 	{name: "copy-unsafe-links", opts: []string{"-a", "--copy-unsafe-links"}, prepare: unsafeLinks, check: checkUnsafeLinks},
@@ -533,7 +535,7 @@ func TestInterop(t *testing.T) {
 					if pr.client.name == "openrsync" || pr.server.name == "openrsync" {
 						if slices.ContainsFunc(sc.opts, func(o string) bool {
 							return strings.HasPrefix(o, "--compress-choice") || strings.HasPrefix(o, "--checksum-choice") ||
-								o == "-s" || o == "--inplace" || o == "--delete-after" || o == "--no-inc-recursive" || o == "--copy-unsafe-links" || strings.HasPrefix(o, "--protocol")
+								o == "-s" || o == "--inplace" || o == "--delete-after" || o == "--no-inc-recursive" || o == "--delay-updates" || o == "--copy-unsafe-links" || strings.HasPrefix(o, "--protocol")
 						}) {
 							t.Skip("not supported by openrsync")
 						}
