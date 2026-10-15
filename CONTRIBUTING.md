@@ -14,9 +14,14 @@ builds are static (`CGO_ENABLED=0`); see `.goreleaser.yaml`.
 
 ## Releasing
 
-Pushing a `v*` tag runs goreleaser, which publishes static binaries for
-Linux and macOS on amd64 and arm64. xfer is pre-1.0: tag `v0.x.y`, and
-expect the API to change between minor versions until 1.0.
+Releases are cut by [release-please](https://github.com/googleapis/release-please)
+from the commit history. It keeps a release PR open against `canary` with
+the next version and its changelog; merging that PR tags the release,
+creates the GitHub release, and runs goreleaser, which attaches static
+binaries for Linux and macOS on amd64 and arm64. Don't push tags by hand.
+
+xfer is pre-1.0: `feat` commits bump the minor version and everything else
+the patch version, and the API may change between minor versions until 1.0.
 
 ## Testing
 
@@ -108,9 +113,15 @@ two trees. Run it on Linux with a local disk:
 ## Commits
 
 - One logical change per commit; tests and code together.
-- Subject: `area: what changed`, lower case, no trailing period, about 72
-  characters at most, e.g. `rsync: incremental recursion`. Areas are
-  package or directory names (`rsync`, `token`, `ci`, `bench`, ...).
+- Subject: a [Conventional Commit](https://www.conventionalcommits.org/),
+  `type(scope): what changed`, lower case, no trailing period, about 72
+  characters at most, e.g. `feat(rsync): incremental recursion`. Types are
+  `feat`, `fix`, `perf`, `test`, `docs`, `ci`, `build`, `style`, `refactor`
+  and `chore`; the scope is a package or directory (`rsync`, `token`,
+  `bench`, ...) and may be left out. release-please builds the changelog
+  from these: `feat`, `fix` and `perf` appear in it, and a `!` after the
+  type or a `BREAKING CHANGE:` footer marks an incompatible change.
+- Keep history linear: rebase rather than merge.
 - A body, when needed, explains why, wrapped at 72 columns.
 - `go vet`, `gofmt`, staticcheck and `go test ./...` must pass.
 - A `Signed-off-by:` line (`git commit -s`) is welcome but not required.
