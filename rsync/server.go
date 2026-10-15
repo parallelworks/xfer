@@ -655,7 +655,7 @@ func summaryOnly(err error) bool {
 // Version is the version of this implementation. release-please updates
 // it in each release, and release builds also set it with
 // -ldflags "-X github.com/parallelworks/xfer/rsync.Version=...".
-var Version = "0.0.0" // x-release-please-version
+var Version = "0.1.0" // x-release-please-version
 
 const usage = `xfer rsync: a fast, versatile, remote (and local) file-copying tool,
 compatible with rsync protocol versions 27 to 33.
