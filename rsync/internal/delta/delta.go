@@ -172,7 +172,7 @@ type matcher struct {
 	inplace bool
 	stats   Stats
 	tags    *tagSet // with Stats: counts hash hits as rsync does
-	base    int64 // file offset of buf[0]
+	base    int64   // file offset of buf[0]
 
 	buf []byte
 	eof bool
