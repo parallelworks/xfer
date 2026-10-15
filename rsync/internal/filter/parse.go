@@ -134,8 +134,12 @@ func (c *parseCtx) parseString(dst []Rule, s string, tmpl Flags, old bool) ([]Ru
 				pat = ".cvsignore"
 			}
 			if r.Flags&FlagExcludeSelf != 0 {
-				base := pat[strings.LastIndexByte(pat, '/')+1:]
-				dst = c.add(dst, Rule{}, base, false)
+				// A name ending in '/' has no base name to exclude;
+				// an empty pattern matches nothing and could not be
+				// sent to the server.
+				if base := pat[strings.LastIndexByte(pat, '/')+1:]; base != "" {
+					dst = c.add(dst, Rule{}, base, false)
+				}
 				r.Flags &^= FlagExcludeSelf
 			}
 			if r.Flags&FlagPerDirMerge == 0 {
@@ -233,6 +237,10 @@ func (c *parseCtx) add(dst []Rule, r Rule, pat string, perDir bool) []Rule {
 	if len(pat) > 1 && pat[len(pat)-1] == '/' {
 		pat = pat[:len(pat)-1]
 		r.Flags |= FlagDirectory
+	} else if pat == "" {
+		// A "-C" rule has no pattern to carry the trailing slash of a
+		// directory merge file name it was read from ("dir-merge foo/").
+		r.Flags &^= FlagDirectory
 	}
 	if perDir && r.Flags&(FlagAbsPath|FlagMerge) == 0 && strings.HasPrefix(pat, "/") {
 		r.Flags |= FlagAbsPath
