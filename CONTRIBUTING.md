@@ -12,6 +12,12 @@ The binary runs rsync as `xfer rsync [OPTION]... SRC... DEST`, or directly
 when invoked under the name `rsync` (for example through a symlink). Release
 builds are static (`CGO_ENABLED=0`); see `.goreleaser.yaml`.
 
+## Releasing
+
+Pushing a `v*` tag runs goreleaser, which publishes static binaries for
+Linux and macOS on amd64 and arm64. xfer is pre-1.0: tag `v0.x.y`, and
+expect the API to change between minor versions until 1.0.
+
 ## Testing
 
     go vet ./...
