@@ -5,6 +5,7 @@ package rsync_test
 
 import (
 	"bytes"
+	"crypto/fips140"
 	"crypto/sha256"
 	"fmt"
 	"io/fs"
@@ -578,6 +579,21 @@ func TestInterop(t *testing.T) {
 						}) {
 							t.Skip("not supported by openrsync")
 						}
+						sender := pr.server
+						if dir == "push" {
+							sender = pr.client
+						}
+						if sc.name == "copy-unsafe-links" && sender.name == "openrsync" {
+							// openrsync's sender stats every symlink under
+							// --copy-unsafe-links and fails on the safe,
+							// dangling dir/link-dangling, which rsync keeps.
+							t.Skip("openrsync sender fails on dangling safe symlinks")
+						}
+					}
+					if fips140.Enabled() && !fipsCapable(sc, pr.client, pr.server) {
+						// xfer refuses MD4/MD5 by design in FIPS mode;
+						// TestFIPS covers the refusal.
+						t.Skip("needs MD4/MD5, refused in FIPS mode")
 					}
 					t.Parallel()
 					runScenario(t, sc, pr.client, pr.server, dir == "push", ssh)
@@ -585,6 +601,20 @@ func TestInterop(t *testing.T) {
 			}
 		}
 	}
+}
+
+// fipsCapable reports whether a scenario can run between two peers in FIPS
+// mode, where only xxHash checksums may be negotiated: that needs protocol
+// 30 or newer and an xxHash algorithm on both sides (GNU rsync 3.2.0+).
+func fipsCapable(sc scenario, client, server *peer) bool {
+	for _, o := range sc.opts {
+		if v, ok := strings.CutPrefix(o, "--protocol="); ok {
+			if n, _ := strconv.Atoi(v); n < 30 {
+				return false
+			}
+		}
+	}
+	return min(client.version, server.version) >= 30 && client.supports("xxh") && server.supports("xxh")
 }
 
 func runScenario(t *testing.T, sc scenario, client, server *peer, push bool, ssh string) {

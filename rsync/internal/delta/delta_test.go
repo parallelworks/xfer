@@ -5,15 +5,17 @@ package delta
 
 import (
 	"bytes"
-	"crypto/md5"
+	"crypto/sha256"
 	"io"
 	"math/rand/v2"
 	"testing"
 )
 
-func md5Strong(dst, p []byte) []byte {
-	h := md5.Sum(p)
-	return append(dst, h[:]...)
+// strongSum is the strong checksum for these tests. Any hash will do; a
+// FIPS-approved one lets the package pass under GODEBUG=fips140=only.
+func strongSum(dst, p []byte) []byte {
+	h := sha256.Sum256(p)
+	return append(dst, h[:16]...)
 }
 
 // rebuild applies a delta to basis.
@@ -44,13 +46,13 @@ func (r *rebuild) Match(i int, data []byte) error {
 
 func roundTrip(t *testing.T, basis, target []byte, bl int) *rebuild {
 	t.Helper()
-	s, err := Generate(bytes.NewReader(basis), int64(len(basis)), bl, 16, md5Strong)
+	s, err := Generate(bytes.NewReader(basis), int64(len(basis)), bl, 16, strongSum)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rb := &rebuild{basis: basis, s: s}
 	// A reader that returns short reads exercises buffer management.
-	if err := Match(&choppy{data: target}, s, md5Strong, rb); err != nil {
+	if err := Match(&choppy{data: target}, s, strongSum, rb); err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(rb.out.Bytes(), target) {
@@ -134,10 +136,10 @@ func TestMatchShortLastBlock(t *testing.T) {
 func BenchmarkMatchIdentical(b *testing.B) {
 	r := rand.New(rand.NewPCG(5, 5))
 	data := randBytes(r, 16<<20)
-	s, _ := Generate(bytes.NewReader(data), int64(len(data)), 4096, 16, md5Strong)
+	s, _ := Generate(bytes.NewReader(data), int64(len(data)), 4096, 16, strongSum)
 	b.SetBytes(int64(len(data)))
 	for b.Loop() {
-		Match(bytes.NewReader(data), s, md5Strong, nopEmitter{})
+		Match(bytes.NewReader(data), s, strongSum, nopEmitter{})
 	}
 }
 
@@ -145,10 +147,10 @@ func BenchmarkMatchNoCommon(b *testing.B) {
 	r := rand.New(rand.NewPCG(6, 6))
 	basis := randBytes(r, 16<<20)
 	data := randBytes(r, 16<<20)
-	s, _ := Generate(bytes.NewReader(basis), int64(len(basis)), 4096, 16, md5Strong)
+	s, _ := Generate(bytes.NewReader(basis), int64(len(basis)), 4096, 16, strongSum)
 	b.SetBytes(int64(len(data)))
 	for b.Loop() {
-		Match(bytes.NewReader(data), s, md5Strong, nopEmitter{})
+		Match(bytes.NewReader(data), s, strongSum, nopEmitter{})
 	}
 }
 
@@ -169,10 +171,10 @@ func TestMatchInplace(t *testing.T) {
 		func(b []byte) []byte { return append(append([]byte{}, b[50000:]...), b[:50000]...) }, // rotate
 	} {
 		target := edit(append([]byte(nil), basis...))
-		s, _ := Generate(bytes.NewReader(basis), int64(len(basis)), 1000, 16, md5Strong)
+		s, _ := Generate(bytes.NewReader(basis), int64(len(basis)), 1000, 16, strongSum)
 		file := append([]byte(nil), basis...)
 		ip := &inplaceApply{file: file, s: s}
-		if err := MatchWith(bytes.NewReader(target), s, md5Strong, ip, Options{Inplace: true}); err != nil {
+		if err := MatchWith(bytes.NewReader(target), s, strongSum, ip, Options{Inplace: true}); err != nil {
 			t.Fatal(err)
 		}
 		if got := ip.file[:ip.off]; !bytes.Equal(got, target) {
@@ -218,8 +220,8 @@ func TestMatchBoundedBuffer(t *testing.T) {
 	basis := randBytes(r, 16<<20)
 	target := append([]byte(nil), basis...)
 	copy(target[8<<20:], randBytes(r, 1<<20))
-	s, _ := Generate(bytes.NewReader(basis), int64(len(basis)), 8192, 16, md5Strong)
-	m := matcher{r: bytes.NewReader(target), s: s, strong: md5Strong, e: discard{}}
+	s, _ := Generate(bytes.NewReader(basis), int64(len(basis)), 8192, 16, strongSum)
+	m := matcher{r: bytes.NewReader(target), s: s, strong: strongSum, e: discard{}}
 	if err := m.run(); err != nil {
 		t.Fatal(err)
 	}
