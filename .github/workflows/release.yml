@@ -1,16 +1,20 @@
 name: release
 
-# release-please keeps a release PR open against canary. Merging it tags the
-# release and creates the GitHub release, and goreleaser then attaches the
-# binaries to it.
-
+# release-please keeps a release PR open against canary with the next
+# version and its changelog. Merging that PR tags the release and creates
+# the GitHub release, and goreleaser then attaches the binaries to it.
+#
+# Everything runs with the default GITHUB_TOKEN. GitHub starts no workflows
+# for a PR or a tag that token created, so this workflow dispatches CI on
+# the release PR's branch itself (workflow_dispatch is the documented
+# exception) and runs goreleaser here rather than on the tag.
 on:
   push:
     branches: [canary]
 
-permissions:
-  contents: write
-  pull-requests: write
+# Granted per job: only release-please opens the PR and dispatches CI, and
+# only goreleaser uploads to the release.
+permissions: {}
 
 concurrency:
   group: release
@@ -19,6 +23,11 @@ concurrency:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
     outputs:
       created: ${{ steps.release.outputs.release_created }}
       tag: ${{ steps.release.outputs.tag_name }}
@@ -29,13 +38,23 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
           target-branch: canary
+      - name: Run CI on the release PR
+        # The env block is evaluated even when the step is skipped, so the
+        # PR JSON is parsed in the shell rather than with fromJSON here.
+        if: steps.release.outputs.pr != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.release.outputs.pr }}
+        run: gh workflow run ci.yml --ref "$(jq -r .headBranchName <<<"$PR")"
 
-  # A tag pushed with GITHUB_TOKEN starts no workflows, so goreleaser runs
-  # here rather than on the tag.
   goreleaser:
     needs: release-please
     if: needs.release-please.outputs.created == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -44,6 +63,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: stable
+          # Release binaries are built from source alone, never from a
+          # build cache that an earlier run left behind.
+          cache: false
       - name: test
         run: go test -count=1 -short ./...
       - uses: goreleaser/goreleaser-action@v7

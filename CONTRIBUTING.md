@@ -121,7 +121,8 @@ two trees. Run it on Linux with a local disk:
   `bench`, ...) and may be left out. release-please builds the changelog
   from these: `feat`, `fix` and `perf` appear in it, and a `!` after the
   type or a `BREAKING CHANGE:` footer marks an incompatible change.
-- Keep history linear: rebase rather than merge.
+- Keep history linear: rebase rather than merge. PRs are squash-merged,
+  so a PR's title becomes its commit and is checked the same way.
 - A body, when needed, explains why, wrapped at 72 columns.
 - `go vet`, `gofmt`, staticcheck and `go test ./...` must pass.
 - A `Signed-off-by:` line (`git commit -s`) is welcome but not required.

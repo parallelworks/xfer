@@ -4,6 +4,8 @@ on:
   push:
     branches: [canary, main, 'feat/**']
   pull_request:
+  # The release workflow dispatches a run on release-please's branch: GitHub
+  # does not start pull_request workflows for PRs that GITHUB_TOKEN opened.
   workflow_dispatch:
 
 permissions:
