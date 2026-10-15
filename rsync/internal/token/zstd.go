@@ -82,7 +82,7 @@ func newZstdEnc(w *wire.Writer, level int) *zstdEnc {
 	z.enc, z.err = zstd.NewWriter(&z.out,
 		zstd.WithEncoderConcurrency(2),
 		zstd.WithEncoderLevel(zstd.EncoderLevelFromZstd(level)),
-		zstd.WithWindowSize(8<<20),
+		zstd.WithWindowSize(2<<20),
 		zstd.WithEncoderCRC(false),
 		zstd.WithZeroFrames(false),
 	)
