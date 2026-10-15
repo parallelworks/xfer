@@ -168,7 +168,8 @@ func (s *session) sendFiles() error {
 	}
 	block := checksum.NewBlock(s.xferSum, s.seed, s.seedFirst)
 	fileHash := checksum.NewFile(s.xferSum, s.seed)
-	s.log.sending = true
+	// A local transfer reports from the receiving side, as rsync does.
+	s.log.sending = !s.localTransfer
 
 	if s.opts.RemoveSourceFiles {
 		s.onSuccess = func(ndx int32) {

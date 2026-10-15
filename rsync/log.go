@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/parallelworks/xfer/rsync/internal/flist"
 )
@@ -125,7 +126,7 @@ func (l *logger) deleted(name string, isDir bool) {
 	if l.hasI > 0 {
 		l.print(l.expand(&flist.File{Name: name}, itemDeleted, "del.", "") + "\n")
 	} else {
-		l.print("deleting " + name + "\n")
+		l.print("deleting " + l.safe(name) + "\n")
 	}
 }
 
@@ -273,18 +274,18 @@ func (l *logger) expand(f *flist.File, iflags uint32, op, xname string) string {
 		case '%':
 			v = "%"
 		case 'n':
-			v = f.Name
+			v = l.safe(f.Name)
 			if f.IsDir() && !strings.HasSuffix(v, "/") {
 				v += "/"
 			}
 		case 'f':
-			v = f.Name
+			v = l.safe(f.Name)
 		case 'L':
 			switch {
 			case xname != "" && iflags&itemXnameFollows != 0:
-				v = " => " + xname
+				v = " => " + l.safe(xname)
 			case f.IsLink() && f.Link != "":
-				v = " -> " + f.Link
+				v = " -> " + l.safe(f.Link)
 			}
 		case 'i':
 			v = l.itemString(f, iflags)
@@ -312,6 +313,44 @@ func (l *logger) expand(f *flist.File, iflags uint32, op, xname string) string {
 			spec = ""
 		}
 		b.WriteString(pad(v, strings.Trim(spec, "'")))
+	}
+	return b.String()
+}
+
+// safe escapes a name for output the way rsync does: control characters
+// other than tab, and bytes that are not valid UTF-8 unless -8 is given,
+// become \#ooo (octal).
+func (l *logger) safe(name string) string {
+	clean := true
+	for i := 0; i < len(name); i++ {
+		if c := name[i]; (c < 0x20 && c != '\t') || c >= 0x80 {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return name
+	}
+	var b strings.Builder
+	for i := 0; i < len(name); {
+		c := name[i]
+		switch {
+		case c < 0x20 && c != '\t':
+			fmt.Fprintf(&b, "\\#%03o", c)
+			i++
+		case c >= 0x80 && !l.opts.EightBitOutput:
+			r, n := utf8.DecodeRuneInString(name[i:])
+			if r == utf8.RuneError && n <= 1 {
+				fmt.Fprintf(&b, "\\#%03o", c)
+				i++
+			} else {
+				b.WriteString(name[i : i+n])
+				i += n
+			}
+		default:
+			b.WriteByte(c)
+			i++
+		}
 	}
 	return b.String()
 }

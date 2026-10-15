@@ -558,6 +558,21 @@ func checkPrune(t *testing.T, src, dst, out string) {
 	}
 }
 
+// dirLink makes the destination's dir a symlink to a directory.
+func dirLink(t *testing.T, src, dst string) {
+	os.Mkdir(filepath.Join(dst, "realdir"), 0o755)
+	os.Symlink("realdir", filepath.Join(dst, "dir"))
+}
+
+func checkDirLink(t *testing.T, src, dst, out string) {
+	if target, err := os.Readlink(filepath.Join(dst, "dir")); err != nil || target != "realdir" {
+		t.Errorf("dir: want the symlink kept, got %q %v", target, err)
+	}
+	if !bytes.Equal(mustRead(t, filepath.Join(dst, "realdir/nested/deep.txt")), mustRead(t, filepath.Join(src, "dir/nested/deep.txt"))) {
+		t.Error("realdir/nested/deep.txt differs")
+	}
+}
+
 func mustRead(t *testing.T, p string) []byte {
 	b, err := os.ReadFile(p)
 	if err != nil {
@@ -624,6 +639,7 @@ var scenarios = []scenario{
 	{name: "skip-compress-zlib", needs: "zlib", opts: []string{"-a", "--compress-choice=zlib", "--skip-compress=bin/txt", "--no-W"}, prepare: staleDest, times: true, minProto: 31, check: checkIgnoring("extra-file", "extra-dir", "extra-dir/sub", "extra-dir/sub/x")},
 	{name: "skip-compress-zlibx", needs: "zlibx", opts: []string{"-a", "--compress-choice=zlibx", "--skip-compress=bin", "--no-W"}, prepare: staleDest, times: true, minProto: 31, check: checkIgnoring("extra-file", "extra-dir", "extra-dir/sub", "extra-dir/sub/x")},
 	{name: "prune-empty-dirs", opts: []string{"-a", "-m", "--delete", "--exclude=*.o"}, prepare: emptyDirs, check: checkPrune},
+	{name: "keep-dirlinks", opts: []string{"-a", "-K"}, prepare: dirLink, check: checkDirLink},
 	{name: "sparse", opts: []string{"-a", "-S"}, prepare: sparseFile, check: checkSparse},
 	{name: "timeout", opts: []string{"-a", "--timeout=1", "--delete", "--no-W"}, prepare: staleDest, times: true},
 	{name: "copy-unsafe-links", opts: []string{"-a", "--copy-unsafe-links"}, prepare: unsafeLinks, check: checkUnsafeLinks},

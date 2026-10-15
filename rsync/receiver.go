@@ -251,7 +251,7 @@ func (rv *receiving) mapIDs(users, groups map[uint32]string) {
 	if rv.o.NumericIDs {
 		return
 	}
-	root := isRoot()
+	root := rv.super()
 	for id, name := range users {
 		if !root || rv.names[[2]any{"u", id}] {
 			continue
@@ -691,7 +691,7 @@ func (rv *receiving) itemFlags(f *flist.File, fi fs.FileInfo, iflags uint32) uin
 		}
 	}
 	sys := statSys(fi)
-	if o.Owner && isRoot() && sys.uid != rv.uid(f) {
+	if o.Owner && rv.super() && sys.uid != rv.uid(f) {
 		iflags |= itemReportOwner
 	}
 	if o.Group && sys.gid != rv.gid(f) {
@@ -734,6 +734,9 @@ func (rv *receiving) genDir(ndx int32, f *flist.File, name string, fi fs.FileInf
 			return nil
 		}
 	}
+	if exists {
+		fi = rv.keepDirlink(name, fi)
+	}
 	if exists && !fi.IsDir() {
 		if err := rv.deleteForReplace(name, fi); err != nil {
 			s.sendError("delete of %q failed: %s", name, errnoText(err))
@@ -764,6 +767,28 @@ func (rv *receiving) genDir(ndx int32, f *flist.File, name string, fi fs.FileInf
 		rv.deleteInDir(name, f.Name, rv.inList)
 	}
 	return nil
+}
+
+// super reports whether to attempt what only the super-user may do: set
+// owners and make devices. That is the default for root; --super and
+// --no-super override it.
+func (rv *receiving) super() bool {
+	if rv.o.set["super"] || rv.o.Super {
+		return rv.o.Super
+	}
+	return isRoot()
+}
+
+// keepDirlink returns the attributes of the directory a symlink at name
+// points to when -K lets the symlink stand in for a directory, and fi
+// otherwise.
+func (rv *receiving) keepDirlink(name string, fi fs.FileInfo) fs.FileInfo {
+	if rv.o.KeepDirlinks && fi.Mode()&fs.ModeSymlink != 0 {
+		if st, err := rv.root.Stat(name); err == nil && st.IsDir() {
+			return st
+		}
+	}
+	return fi
 }
 
 // inList reports whether a wire name is in the (single) file list.
@@ -832,7 +857,7 @@ func (rv *receiving) setLinkTime(name string, f *flist.File, fi fs.FileInfo) {
 
 func (rv *receiving) genSpecial(ndx int32, f *flist.File, name string, fi fs.FileInfo, exists bool) error {
 	s, o := rv.s, rv.o
-	if (f.IsDevice() && !(o.Devices && isRoot())) || (f.IsSpecial() && !o.Specials) {
+	if (f.IsDevice() && !(o.Devices && rv.super())) || (f.IsSpecial() && !o.Specials) {
 		if !s.server {
 			s.info("skipping non-regular file \"" + f.Name + "\"\n")
 		}
@@ -939,7 +964,7 @@ func (rv *receiving) chown(fh *os.File, name string, f *flist.File, fi fs.FileIn
 	if fi != nil {
 		sys = statSys(fi)
 	}
-	if rv.o.Owner && isRoot() {
+	if rv.o.Owner && rv.super() {
 		if u := rv.uid(f); fi == nil || u != sys.uid {
 			uid = int(u)
 		}

@@ -113,7 +113,7 @@ func (rv *receiving) sameAttrs(f *flist.File, fi fs.FileInfo) bool {
 		return false
 	}
 	sys := statSys(fi)
-	if o.Owner && isRoot() && sys.uid != rv.uid(f) {
+	if o.Owner && rv.super() && sys.uid != rv.uid(f) {
 		return false
 	}
 	if o.Group && sys.gid != rv.gid(f) {

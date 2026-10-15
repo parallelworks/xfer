@@ -549,6 +549,8 @@ func serverArgs(o *Options, push bool) []string {
 		}
 		if o.Super {
 			args = append(args, "--super")
+		} else if o.set["super"] {
+			args = append(args, "--no-super")
 		}
 		if o.SizeOnly {
 			args = append(args, "--size-only")

@@ -52,7 +52,7 @@ func TestLocal(t *testing.T) {
 				t.Fatalf("rsync %s: exit %d\n%s%s", strings.Join(args, " "), code, stdout, stderr)
 			}
 			if sc.check != nil {
-				sc.check(t, src, dst, strings.ReplaceAll(stdout, "<f", ">f"))
+				sc.check(t, src, dst, stdout)
 				return
 			}
 			if d := diffSnapshots(snapshot(t, src, sc.times, sc.perms), snapshot(t, dst, sc.times, sc.perms)); d != "" {

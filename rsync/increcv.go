@@ -192,6 +192,9 @@ func (rv *receiving) precreateDir(f *flist.File) {
 	}
 	name := rv.localName(f)
 	fi, err := rv.root.Lstat(name)
+	if err == nil {
+		fi = rv.keepDirlink(name, fi)
+	}
 	if err == nil && fi.IsDir() {
 		return
 	}

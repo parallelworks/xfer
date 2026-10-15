@@ -49,3 +49,24 @@ func TestSkipCompress(t *testing.T) {
 		}
 	}
 }
+
+func TestSafeName(t *testing.T) {
+	l := &logger{opts: &Options{}}
+	l8 := &logger{opts: &Options{EightBitOutput: true}}
+	for in, want := range map[string][2]string{
+		"plain":     {"plain", "plain"},
+		"tab\tx":    {"tab\tx", "tab\tx"},
+		"nl\nx":     {`nl\#012x`, `nl\#012x`},
+		"ünï":       {"ünï", "ünï"},
+		"ff\xffx":   {`ff\#377x`, "ff\xffx"},
+		"del\x7fx":  {"del\x7fx", "del\x7fx"},
+		"half\xc3x": {`half\#303x`, "half\xc3x"},
+	} {
+		if got := l.safe(in); got != want[0] {
+			t.Errorf("safe(%q) = %q, want %q", in, got, want[0])
+		}
+		if got := l8.safe(in); got != want[1] {
+			t.Errorf("-8 safe(%q) = %q, want %q", in, got, want[1])
+		}
+	}
+}
