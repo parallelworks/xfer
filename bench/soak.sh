@@ -10,10 +10,12 @@
 # It builds a tree of SIZE_GB (default 5) in DIR/src: large files plus
 # 20,000 small ones. Each of ITERATIONS (default 10) rounds then:
 #   - changes part of the source (after the first round): rewrites a MB in
-#     two large files, edits, adds and removes small files;
+#     two large files, edits, adds and removes small files, and removes
+#     two large files from the destination so they are sent again;
 #   - starts xfer pushing or pulling (alternately) over a remote shell
-#     with --partial --delete, and interrupts it after a random delay,
-#     with SIGINT or SIGKILL (alternately);
+#     with --partial --delete, limited to 100 MB/s so that it is still
+#     running, and interrupts it after a random delay, with SIGINT or
+#     SIGKILL (alternately);
 #   - runs the same transfer again to completion;
 #   - compares SHA-256 manifests of every file in the source and the
 #     destination, so a stray temporary file fails the round too.
@@ -59,11 +61,14 @@ manifest() {
 }
 
 change() {
-	python3 - "$src" "$1" <<'EOF'
+	python3 - "$src" "$1" "$dst" <<'EOF'
 import os, random, sys
-root, seed = sys.argv[1], int(sys.argv[2])
+root, seed, dst = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 rng = random.Random(seed)
 bigs = sorted(f for f in os.listdir(root) if f.startswith("big"))
+for name in rng.sample(bigs, min(2, len(bigs))):
+    if os.path.exists(os.path.join(dst, name)):
+        os.remove(os.path.join(dst, name))
 for name in rng.sample(bigs, min(2, len(bigs))):
     p = os.path.join(root, name)
     with open(p, "r+b") as f:
@@ -86,14 +91,19 @@ for _ in range(200):
 EOF
 }
 
+# transfer runs one transfer; with EXEC=exec it replaces the (background)
+# shell, so that $! is xfer itself and the interrupt reaches it.
 transfer() {
-	if [ "$1" = push ]; then
-		"$X" rsync -a --partial --delete -e "$D/fakessh" --rsync-path="$X rsync" "$src/" "host:$dst/"
+	dir=$1
+	shift
+	if [ "$dir" = push ]; then
+		${EXEC:-} "$X" rsync -a --partial --delete "$@" -e "$D/fakessh" --rsync-path="$X rsync" "$src/" "host:$dst/"
 	else
-		"$X" rsync -a --partial --delete -e "$D/fakessh" --rsync-path="$X rsync" "host:$src/" "$dst/"
+		${EXEC:-} "$X" rsync -a --partial --delete "$@" -e "$D/fakessh" --rsync-path="$X rsync" "host:$src/" "$dst/"
 	fi
 }
 
+rm -rf "$dst"
 fail=0
 i=1
 while [ "$i" -le "$N" ]; do
@@ -101,13 +111,14 @@ while [ "$i" -le "$N" ]; do
 	if [ $((i % 2)) -eq 1 ]; then dir=push; else dir=pull; fi
 	if [ $((i % 4)) -lt 2 ]; then sig=INT; else sig=KILL; fi
 	delay=$(python3 -c "import random; random.seed($i); print('%.1f' % random.uniform(0.3, 4.0))")
-	transfer "$dir" >/dev/null 2>"$D/interrupted.err" </dev/null &
+	EXEC=exec transfer "$dir" --bwlimit=100m >/dev/null 2>"$D/interrupted.err" </dev/null &
 	pid=$!
 	sleep "$delay"
 	if kill -s "$sig" "$pid" 2>/dev/null; then
 		state="interrupted with SIG$sig after ${delay}s"
 	else
-		state="finished before the interrupt at ${delay}s"
+		state="NOT INTERRUPTED: finished within ${delay}s"
+		fail=1
 	fi
 	wait "$pid" 2>/dev/null || true
 	if ! transfer "$dir" >/dev/null 2>"$D/resume.err" </dev/null; then
@@ -117,7 +128,7 @@ while [ "$i" -le "$N" ]; do
 		break
 	fi
 	if manifest "$src" > "$D/src.sha" && manifest "$dst" > "$D/dst.sha" && cmp -s "$D/src.sha" "$D/dst.sha"; then
-		echo "round $i ($dir, $state): identical"
+		echo "round $i ($dir, $state): identical, $(wc -l < "$D/dst.sha") files"
 	else
 		echo "round $i ($dir, $state): DIFFERENT"
 		diff "$D/src.sha" "$D/dst.sha" | head -20
