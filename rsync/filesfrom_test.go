@@ -34,3 +34,18 @@ func TestFilesFromRemote(t *testing.T) {
 		}
 	}
 }
+
+func TestSkipCompress(t *testing.T) {
+	sc := newSkipCompress(&Options{})
+	for name, want := range map[string]bool{"a/b.GZ": true, "x.tar.gz": true, "notes.txt": false, "gz": false, "f.mp3": true} {
+		if sc.skip(name) != want {
+			t.Errorf("default list: skip(%q) = %v", name, !want)
+		}
+	}
+	sc = newSkipCompress(&Options{SkipCompress: "txt/mp[34]"})
+	for name, want := range map[string]bool{"a.txt": true, "b.mp4": true, "c.mp5": false, "d.gz": false} {
+		if sc.skip(name) != want {
+			t.Errorf("custom list: skip(%q) = %v", name, !want)
+		}
+	}
+}

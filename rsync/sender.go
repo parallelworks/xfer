@@ -162,6 +162,10 @@ func (s *session) sendFiles() error {
 		maxPhase = 2
 	}
 	tw := token.NewWriter(s.tokenKind(), s.out.W, s.proto, s.opts.CompressLevel)
+	if fc, ok := tw.(token.FileCompressor); ok {
+		skip := newSkipCompress(s.opts)
+		s.compressFile = func(f *flist.File) { fc.CompressFile(!skip.skip(f.Name)) }
+	}
 	block := checksum.NewBlock(s.xferSum, s.seed, s.seedFirst)
 	fileHash := checksum.NewFile(s.xferSum, s.seed)
 	s.log.sending = true
@@ -310,6 +314,9 @@ func (s *session) sendFile(f *flist.File, req request, head sumHead, sums *delta
 		s.log.progress.begin(f.Name, f.Size, 0, s.lists.total)
 	}
 	fileHash.Reset()
+	if s.compressFile != nil {
+		s.compressFile(f)
+	}
 	em := &sendEmitter{s: s, tw: tw, h: fileHash}
 	var src io.Reader = file
 	if s.opts.BWLimit > 0 {

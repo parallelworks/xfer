@@ -35,6 +35,13 @@ func newCompWriter(w *wire.Writer, c encCodec) *compWriter {
 	return &compWriter{w: w, codec: c}
 }
 
+// CompressFile implements FileCompressor.
+func (c *compWriter) CompressFile(on bool) {
+	if s, ok := c.codec.(interface{ setStore(bool) }); ok {
+		s.setStore(!on)
+	}
+}
+
 func (c *compWriter) writeRun() {
 	r := c.runStart - c.lastRunEnd
 	n := c.lastToken - c.runStart

@@ -556,7 +556,7 @@ func serverArgs(o *Options, push bool) []string {
 		if o.Stats {
 			args = append(args, "--stats")
 		}
-	} else if o.SkipCompress != "" {
+	} else if o.SkipCompress != "" || o.set["skip-compress"] {
 		args = append(args, "--skip-compress="+o.SkipCompress)
 	}
 	if push && o.ModifyWindow != 0 {

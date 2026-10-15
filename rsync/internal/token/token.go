@@ -121,6 +121,13 @@ func DefaultLevel(k Kind) int {
 	return 0
 }
 
+// FileCompressor is implemented by Writers that can leave a file's data
+// uncompressed (--skip-compress). The zlib kinds can; zstd and LZ4 compress
+// every file. CompressFile is called before a file's first token.
+type FileCompressor interface {
+	CompressFile(on bool)
+}
+
 // NewWriter returns a Writer encoding kind k to w for protocol proto.
 // level 0 selects the kind's default level.
 func NewWriter(k Kind, w *wire.Writer, proto int, level int) Writer {

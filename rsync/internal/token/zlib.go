@@ -92,6 +92,8 @@ const segBufMax = 64 << 10
 type zlibEnc struct {
 	sink       recordSink
 	fw         *flate.Writer
+	fws        [2]*flate.Writer // by store
+	store      bool             // the current file is stored, not compressed
 	level      int
 	hist       history
 	seeMatches bool
@@ -105,17 +107,27 @@ func newZlibEnc(w *wire.Writer, seeMatches, quirk bool, level int) *zlibEnc {
 	return &zlibEnc{sink: recordSink{w: w, hold: len(syncMarker)}, level: level, seeMatches: seeMatches, quirk: quirk}
 }
 
+// setStore turns compression off (on) for the next segments, for files
+// --skip-compress names. Every segment starts a new deflate fragment, so
+// its level is free to change.
+func (z *zlibEnc) setStore(store bool) { z.store = store }
+
 func (z *zlibEnc) start(dictLen int) error {
 	dict := z.hist.tail(dictLen)
-	if z.fw == nil {
-		fw, err := flate.NewWriterDict(&z.sink, z.level, dict)
+	i, level := 0, z.level
+	if z.store {
+		i, level = 1, flate.NoCompression
+	}
+	if z.fws[i] == nil {
+		fw, err := flate.NewWriterDict(&z.sink, level, dict)
 		if err != nil {
 			return err
 		}
-		z.fw = fw
+		z.fws[i] = fw
 	} else {
-		z.fw.ResetDict(&z.sink, dict)
+		z.fws[i].ResetDict(&z.sink, dict)
 	}
+	z.fw = z.fws[i]
 	z.streaming = true
 	return nil
 }

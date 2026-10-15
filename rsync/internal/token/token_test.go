@@ -212,6 +212,7 @@ func genData(rng *rand.Rand, n int) []byte {
 }
 
 type fileCase struct {
+	store  bool // sent without compression (--skip-compress)
 	blocks [][]byte
 	ops    []op
 }
@@ -254,6 +255,9 @@ func roundTrip(t *testing.T, k Kind, proto, level int, files []fileCase) {
 	w := wire.NewWriter(&buf)
 	tw := NewWriter(k, w, proto, level)
 	for i, f := range files {
+		if fc, ok := tw.(FileCompressor); ok {
+			fc.CompressFile(!f.store)
+		}
 		encode(t, tw, f.ops, f.blocks)
 		w.Int32(int32(0x7EADBEEF - i)) // trailer: e.g. the file checksum
 	}
@@ -317,6 +321,33 @@ func TestRoundTripLevels(t *testing.T) {
 		for _, level := range []int{1, 2, 5, 6, 7, 9, 19} {
 			roundTrip(t, k, 31, level, files)
 		}
+	}
+}
+
+// TestRoundTripSkipCompress switches compression off and on between files;
+// stored files still share the history the next file's matches use.
+func TestRoundTripSkipCompress(t *testing.T) {
+	rng := rand.New(rand.NewPCG(9, 9))
+	var files []fileCase
+	for i := range 8 {
+		f := genFile(rng, 700, 40, 50, 4000)
+		f.store = i%3 != 0
+		files = append(files, f)
+	}
+	for _, k := range allKinds {
+		for _, proto := range []int{29, 31} {
+			roundTrip(t, k, proto, 0, files)
+		}
+	}
+	// Stored data must actually be stored: a compressible file grows.
+	var buf bytes.Buffer
+	w := wire.NewWriter(&buf)
+	tw := NewWriter(Zlibx, w, 31, 0)
+	tw.(FileCompressor).CompressFile(false)
+	encode(t, tw, []op{{lit: bytes.Repeat([]byte("a"), 100000)}}, nil)
+	w.Flush()
+	if buf.Len() < 100000 {
+		t.Errorf("stored file took %d bytes", buf.Len())
 	}
 }
 

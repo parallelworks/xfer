@@ -112,6 +112,8 @@ type session struct {
 
 	filesFrom []string // the client's --files-from list, when it read it
 
+	compressFile func(f *flist.File) // sender: --skip-compress for the next file
+
 	onSuccess func(ndx int32)
 	onNoSend  func(ndx int32)
 
