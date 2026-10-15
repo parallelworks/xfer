@@ -13,6 +13,11 @@ median wall time and the peak RSS. Run it on Linux with GNU rsync installed
 The data directory should be on tmpfs so disk writeback does not swamp the
 comparison. Results print as a Markdown table and are written as JSON next
 to the data.
+
+With --ssh HOST the "ssh-initial" row also runs: the initial copy of the
+main tree over OpenSSH to and from HOST, which needs GNU rsync, the xfer
+binary (--ssh-xfer) and room for the tree (--ssh-dir) there, and
+key-based login. It measures a real network and is reported, not gated.
 """
 
 import argparse
@@ -126,15 +131,29 @@ def row_args(row, base):
     return opts, os.path.join(base, src) + "/"
 
 
-def run_once(impl, row, base, direction):
-    dst = os.path.join(base, "dst-" + impl.name)
-    prepare(row, base, dst)
-    opts, src = row_args(row, base)
-    shell = ["-e", os.path.join(base, "fakessh"), "--rsync-path=" + impl.server]
+def ssh_setup(a, base):
+    """Puts the main tree on the remote host for the pull direction."""
+    ssh = ["ssh", "-o", "BatchMode=yes", a.ssh]
+    sh(*ssh, "mkdir", "-p", a.ssh_dir)
+    sh("rsync", "-a", "--delete", "-e", "ssh -o BatchMode=yes", os.path.join(base, "new") + "/", a.ssh + ":" + a.ssh_dir + "/new/")
+
+
+def run_ssh(a, impl, base, direction):
+    """Runs the ssh-initial row once: the main tree over OpenSSH."""
+    server = a.rsync_remote if impl.name == "gnu" else a.ssh_xfer + " rsync"
+    shell = ["-e", "ssh -o BatchMode=yes", "--rsync-path=" + server]
     if direction == "push":
-        argv = impl.client + opts + shell + [src, "host:" + dst + "/"]
+        dst = a.ssh_dir + "/dst-" + impl.name
+        sh("ssh", "-o", "BatchMode=yes", a.ssh, "rm", "-rf", dst)
+        argv = impl.client + ["-a"] + shell + [os.path.join(base, "new") + "/", a.ssh + ":" + dst + "/"]
     else:
-        argv = impl.client + opts + shell + ["host:" + src, dst + "/"]
+        dst = os.path.join(base, "dst-" + impl.name)
+        shutil.rmtree(dst, ignore_errors=True)
+        argv = impl.client + ["-a"] + shell + [a.ssh + ":" + a.ssh_dir + "/new/", dst + "/"]
+    return measure(impl, "ssh-initial", direction, argv)
+
+
+def measure(impl, row, direction, argv):
     sh("sync")
     r = subprocess.run([sys.executable, "-c", MEASURE] + argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     line = [l for l in r.stderr.splitlines() if l.startswith("TIME ")]
@@ -144,6 +163,18 @@ def run_once(impl, row, base, direction):
     return float(secs), int(rss)
 
 
+def run_once(impl, row, base, direction):
+    dst = os.path.join(base, "dst-" + impl.name)
+    prepare(row, base, dst)
+    opts, src = row_args(row, base)
+    shell = ["-e", os.path.join(base, "fakessh"), "--rsync-path=" + impl.server]
+    if direction == "push":
+        argv = impl.client + opts + shell + [src, "host:" + dst + "/"]
+    else:
+        argv = impl.client + opts + shell + ["host:" + src, dst + "/"]
+    return measure(impl, row, direction, argv)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--xfer", required=True, help="path to the xfer binary")
@@ -151,6 +182,10 @@ def main():
     ap.add_argument("--dir", required=True, help="data directory (preferably tmpfs)")
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--only", action="append", help="run only these rows")
+    ap.add_argument("--ssh", help="also run the ssh-initial row against this [user@]host over OpenSSH")
+    ap.add_argument("--ssh-dir", default="/tmp/xfer-bench", help="data directory on the ssh host")
+    ap.add_argument("--ssh-xfer", default="xfer", help="path to the xfer binary on the ssh host")
+    ap.add_argument("--rsync-remote", default="rsync", help="path to GNU rsync on the ssh host")
     a = ap.parse_args()
     base = os.path.abspath(a.dir)
     setup(base)
@@ -159,11 +194,21 @@ def main():
     results = []
     print("| row | dir | GNU s | xfer s | xfer/GNU | GNU RSS MB | xfer RSS MB |")
     print("|---|---|---:|---:|---:|---:|---:|")
-    for row in a.only or ROWS:
+    rows = list(a.only or ROWS)
+    if a.ssh and (not a.only or "ssh-initial" in a.only):
+        ssh_setup(a, base)
+        if "ssh-initial" not in rows:
+            rows.append("ssh-initial")
+    elif "ssh-initial" in rows:
+        rows.remove("ssh-initial")
+    for row in rows:
         for direction in ("push", "pull"):
             res = {}
             for impl in impls:
-                runs = [run_once(impl, row, base, direction) for _ in range(a.runs)]
+                if row == "ssh-initial":
+                    runs = [run_ssh(a, impl, base, direction) for _ in range(a.runs)]
+                else:
+                    runs = [run_once(impl, row, base, direction) for _ in range(a.runs)]
                 res[impl.name] = (statistics.median(t for t, _ in runs), max(m for _, m in runs))
             g, x = res["gnu"], res["xfer"]
             results.append({"row": row, "dir": direction, "gnu": g, "xfer": x})
