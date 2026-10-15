@@ -61,7 +61,7 @@ func (rv *receiving) tryBasisDirs(ndx int32, f *flist.File, name string) (done b
 				return true, ""
 			}
 			if !errors.Is(err, syscall.EXDEV) && !errors.Is(err, syscall.EMLINK) {
-				rv.s.sendError("link %q => %q failed: %s", name, p, errnoText(err))
+				rv.s.sendError("link %q => %q failed: %s", rv.full(name), p, errnoText(err))
 				return true, ""
 			}
 			fallthrough // another file system: copy instead
@@ -69,7 +69,7 @@ func (rv *receiving) tryBasisDirs(ndx int32, f *flist.File, name string) (done b
 			if !o.DryRun {
 				dst := filepath.Join(rv.root.Name(), name)
 				if err := copyEntry(p, dst, fi); err != nil {
-					rv.s.sendError("copy %q => %q failed: %s", p, name, errnoText(err))
+					rv.s.sendError("copy %q => %q failed: %s", rv.full(p), name, errnoText(err))
 					return true, ""
 				}
 				if nfi, err := rv.root.Lstat(name); err == nil {

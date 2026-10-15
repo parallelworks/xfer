@@ -43,9 +43,10 @@ type receiving struct {
 	root   *dtree // destination; nil in a dry run whose destination does not exist
 	single string // when copying one file onto a file name: that name
 
-	destCreated bool        // openDest made the destination directory
-	pending     atomic.Bool // the generator's buffered output holds requests or items
-	made        int         // entries the generator created
+	destCreated bool            // openDest made the destination directory
+	pending     atomic.Bool     // the generator's buffered output holds requests or items
+	failedDirs  map[string]bool // directories that could not be created
+	made        int             // entries the generator created
 	umask       uint32
 
 	// ids maps the sender's uids and gids to ours.
@@ -319,6 +320,26 @@ func (rv *receiving) gid(f *flist.File) uint32 {
 // generator ----------------------------------------------------------------
 
 // deltaNotice says, at -vv, whether files are sent as deltas.
+// inFailedDir reports whether name is inside a directory that could not
+// be created, whose contents rsync skips.
+func (rv *receiving) inFailedDir(name string) bool {
+	for d := path.Dir(name); len(rv.failedDirs) > 0 && d != "." && d != "/"; d = path.Dir(d) {
+		if rv.failedDirs[d] {
+			return true
+		}
+	}
+	return false
+}
+
+// full returns the absolute path of a destination name, as rsync names
+// files in its error messages.
+func (rv *receiving) full(name string) string {
+	if rv.root == nil {
+		return absPath(name)
+	}
+	return absPath(path.Join(rv.root.Name(), name))
+}
+
 // flush sends the generator's buffered output.
 func (rv *receiving) flush() error {
 	err := rv.s.out.Flush()
@@ -505,6 +526,9 @@ func (rv *receiving) genFile(ndx int32, f *flist.File, redo bool) (requested boo
 		return false, nil
 	}
 	name := rv.localName(f)
+	if rv.inFailedDir(name) {
+		return false, nil
+	}
 	fi, statErr := rv.lstat(name)
 	exists := statErr == nil
 
@@ -538,7 +562,7 @@ func (rv *receiving) genFile(ndx int32, f *flist.File, redo bool) (requested boo
 	}
 	if exists && !fi.Mode().IsRegular() {
 		if err := rv.deleteForReplace(name, fi); err != nil {
-			s.sendError("delete of %q failed: %s", name, errnoText(err))
+			s.sendError("delete of %q failed: %s", rv.full(name), errnoText(err))
 			return false, nil
 		}
 		exists = false
@@ -595,7 +619,7 @@ func (rv *receiving) genFile(ndx int32, f *flist.File, redo bool) (requested boo
 			if bfi, err := basis.Stat(); err == nil && bfi.Size() > 0 {
 				head, sums, err = rv.makeSums(basis, bfi.Size(), redo)
 				if err != nil {
-					s.sendError("failed to read basis %q: %v", name, err)
+					s.sendError("failed to read basis %q: %v", rv.full(name), err)
 					head, sums = sumHead{}, nil
 				}
 			}
@@ -803,7 +827,7 @@ func (rv *receiving) genDir(ndx int32, f *flist.File, name string, fi fs.FileInf
 	}
 	if exists && !fi.IsDir() {
 		if err := rv.deleteForReplace(name, fi); err != nil {
-			s.sendError("delete of %q failed: %s", name, errnoText(err))
+			s.sendError("delete of %q failed: %s", rv.full(name), errnoText(err))
 			return nil
 		}
 		exists = false
@@ -813,7 +837,12 @@ func (rv *receiving) genDir(ndx int32, f *flist.File, name string, fi fs.FileInf
 		iflags = itemLocalChange | itemIsNew
 		if !o.DryRun && rv.root != nil && name != "." {
 			if err := rv.root.Mkdir(name, rv.newPerm(f)|0o700); err != nil && !errors.Is(err, fs.ErrExist) {
-				s.sendError("recv_generator: mkdir %q failed: %s", name, errnoText(err))
+				s.sendError("recv_generator: mkdir %q failed: %s", rv.full(name), errnoText(err))
+				s.errorAs("", "*** Skipping any contents from this failed directory ***")
+				if rv.failedDirs == nil {
+					rv.failedDirs = map[string]bool{}
+				}
+				rv.failedDirs[name] = true
 				return nil
 			}
 			rv.made++
@@ -908,12 +937,12 @@ func (rv *receiving) genSymlink(ndx int32, f *flist.File, name string, fi fs.Fil
 	if !o.DryRun && rv.root != nil {
 		if exists {
 			if err := rv.deleteForReplace(name, fi); err != nil {
-				s.sendError("delete of %q failed: %s", name, errnoText(err))
+				s.sendError("delete of %q failed: %s", rv.full(name), errnoText(err))
 				return nil
 			}
 		}
 		if err := rv.root.Symlink(f.Link, name); err != nil {
-			s.sendError("symlink %q -> %q failed: %s", name, f.Link, errnoText(err))
+			s.sendError("symlink %q -> %q failed: %s", rv.full(name), f.Link, errnoText(err))
 			return nil
 		}
 		rv.made++
@@ -964,12 +993,12 @@ func (rv *receiving) genSpecial(ndx int32, f *flist.File, name string, fi fs.Fil
 	if !o.DryRun && rv.root != nil {
 		if exists {
 			if err := rv.deleteForReplace(name, fi); err != nil {
-				s.sendError("delete of %q failed: %s", name, errnoText(err))
+				s.sendError("delete of %q failed: %s", rv.full(name), errnoText(err))
 				return nil
 			}
 		}
 		if err := mknod(rv.root, name, f); err != nil {
-			s.sendError("mknod %q failed: %s", name, errnoText(err))
+			s.sendError("mknod %q failed: %s", rv.full(name), errnoText(err))
 			return nil
 		}
 		rv.made++
@@ -1132,7 +1161,7 @@ func (rv *receiving) linkFollowers() {
 			rv.root.Remove(name)
 		}
 		if err := rv.root.Link(target, name); err != nil {
-			rv.s.sendError("link %q => %q failed: %s", name, target, errnoText(err))
+			rv.s.sendError("link %q => %q failed: %s", rv.full(name), target, errnoText(err))
 			continue
 		}
 		if !rv.s.server && rv.s.log.logs() {
@@ -1318,7 +1347,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr tok
 		tmpName = name
 		if o.backups() {
 			if err := rv.backupCopy(name); err != nil {
-				s.sendError("backup of %q failed: %s", name, errnoText(err))
+				s.recvError("backup of %q failed: %s", rv.full(name), errnoText(err))
 			}
 		}
 		tmp, openErr = rv.root.OpenFile(name, os.O_RDWR|os.O_CREATE, 0o600)
@@ -1330,7 +1359,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr tok
 				}
 			}()
 		} else {
-			s.sendError("open %q failed: %s", name, errnoText(openErr))
+			s.recvError("open %q failed: %s", rv.full(name), errnoText(openErr))
 		}
 	} else {
 		tmpName, tmp, openErr = rv.createTemp(name)
@@ -1342,7 +1371,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr tok
 				}
 			}()
 		} else {
-			s.sendError("mkstemp %q failed: %s", name, errnoText(openErr))
+			s.recvError("mkstemp %q failed: %s", rv.full(tmpName), errnoText(openErr))
 		}
 	}
 
@@ -1458,7 +1487,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr tok
 		writeErr = tmp.Sync()
 	}
 	if writeErr != nil {
-		s.sendError("write failed on %q: %v", name, writeErr)
+		s.recvError("write failed on %q: %v", rv.full(name), writeErr)
 		return false, nil
 	}
 	ok := bytes.Equal(sum, fileHash.Sum(nil))
@@ -1468,7 +1497,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr tok
 		rv.sent[req.ndx] = true
 		rv.mu.Unlock()
 		if second {
-			s.sendError("ERROR: %s failed verification -- update discarded.", f.Name)
+			s.recvError("ERROR: %s failed verification -- update discarded.", f.Name)
 		} else {
 			if o.Verbose > 0 || s.log.hasI > 0 {
 				s.info("WARNING: " + f.Name + " failed verification -- update discarded (will try again).\n")
@@ -1491,7 +1520,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr tok
 		rv.root.Mkdir(path.Dir(p), 0o700)
 		if err := rv.root.Rename(tmpName, p); err != nil {
 			rv.root.Remove(tmpName)
-			s.sendError("rename %q -> %q: %s", tmpName, p, errnoText(err))
+			s.recvError("rename %q -> %q: %s", rv.full(tmpName), p, errnoText(err))
 			return false, nil
 		}
 		rv.delayed = append(rv.delayed, name)
@@ -1499,12 +1528,12 @@ func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr tok
 		if !inplace {
 			if o.backups() {
 				if err := rv.backupExisting(name); err != nil {
-					s.sendError("backup of %q failed: %s", name, errnoText(err))
+					s.recvError("backup of %q failed: %s", rv.full(name), errnoText(err))
 				}
 			}
 			if err := rv.root.Rename(tmpName, name); err != nil {
 				rv.root.Remove(tmpName)
-				s.sendError("rename %q -> %q: %s", tmpName, name, errnoText(err))
+				s.recvError("rename %q -> %q: %s", rv.full(tmpName), name, errnoText(err))
 				return false, nil
 			}
 		}
@@ -1668,7 +1697,7 @@ func (rv *receiving) deleteEntry(local, wn string, e fs.DirEntry) {
 			err = rv.root.Remove(local)
 		}
 		if err != nil {
-			s.sendError("delete_file: unlink %q failed: %s", wn, errnoText(err))
+			s.sendError("delete_file: unlink %q failed: %s", rv.full(local), errnoText(err))
 			return
 		}
 	}
@@ -1838,11 +1867,11 @@ func (rv *receiving) finishDelayed() {
 		p, _ := rv.partialPath(name)
 		if rv.o.backups() {
 			if err := rv.backupExisting(name); err != nil {
-				rv.s.sendError("backup of %q failed: %s", name, errnoText(err))
+				rv.s.recvError("backup of %q failed: %s", rv.full(name), errnoText(err))
 			}
 		}
 		if err := rv.root.Rename(p, name); err != nil {
-			rv.s.sendError("rename %q -> %q: %s", p, name, errnoText(err))
+			rv.s.recvError("rename %q -> %q: %s", rv.full(p), name, errnoText(err))
 			continue
 		}
 		dirs[path.Dir(p)] = true

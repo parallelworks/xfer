@@ -447,7 +447,12 @@ func absPath(p string) string {
 func errnoText(err error) string {
 	var errno syscall.Errno
 	if errors.As(err, &errno) {
-		return errno.Error() + " (" + itoa(int(errno)) + ")"
+		// Go's texts are the C library's with a lower-case first letter.
+		text := errno.Error()
+		if text != "" && text[0] >= 'a' && text[0] <= 'z' {
+			text = string(text[0]-'a'+'A') + text[1:]
+		}
+		return text + " (" + itoa(int(errno)) + ")"
 	}
 	return err.Error()
 }

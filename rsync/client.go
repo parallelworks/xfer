@@ -214,7 +214,8 @@ func (c *Client) Run(ctx context.Context, o *Options, operands []string) (*Stats
 		return stats, err
 	}
 	if code := exitStatus(waitErr); code != 0 && waitErr != nil {
-		return stats, &ExitError{Code: code, Err: fmt.Errorf("remote rsync exited with status %d: %w", code, waitErr)}
+		// The remote rsync has reported its errors as they happened.
+		return stats, &ExitError{Code: code}
 	}
 	if !o.ListOnly {
 		writeSummary(stdout, stats, o, log.lv, time.Now().Unix()-start.Unix())

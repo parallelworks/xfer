@@ -452,8 +452,27 @@ func le32(b []byte) uint32 {
 // sendError reports a non-fatal transfer error to the user: locally when we
 // are the client, and through the protocol when we are the server.
 func (s *session) sendError(format string, args ...any) {
+	role := "generator"
+	if s.sender {
+		role = "sender"
+	}
+	s.errorAs(role, format, args...)
+}
+
+// recvError is sendError for the receiver's own errors.
+func (s *session) recvError(format string, args ...any) {
+	s.errorAs("receiver", format, args...)
+}
+
+// errorAs reports an error, tagged with the part of rsync that met it
+// ("[sender]", "[generator]" or "[receiver]") as rsync tags them; an
+// empty role sends the text as it is.
+func (s *session) errorAs(role, format string, args ...any) {
 	format, args = rsyncQuote(format, args, s.log.safe)
 	msg := fmt.Sprintf(format, args...)
+	if role != "" && !strings.HasPrefix(msg, "ERROR") {
+		msg = "rsync: [" + role + "] " + msg
+	}
 	if !strings.HasSuffix(msg, "\n") {
 		msg += "\n"
 	}
@@ -461,7 +480,7 @@ func (s *session) sendError(format string, args ...any) {
 		s.exitCode = ExitPartial
 	}
 	if s.server && s.out.Mux.Enabled() {
-		s.out.SendMsg(wire.MsgErrorXfer, []byte("rsync: "+msg))
+		s.out.SendMsg(wire.MsgErrorXfer, []byte(msg))
 		return
 	}
 	s.log.errorf("%s", msg)

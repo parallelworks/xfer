@@ -586,7 +586,7 @@ func Main(ctx context.Context, args []string, stdio Stdio) int {
 			}
 		}
 		err := Serve(ctx, args, stdioConn{stdio.Stdin, stdio.Stdout}, stdio.Stderr)
-		if err != nil && !bytes.Contains([]byte(err.Error()), []byte("remote side exited")) {
+		if err != nil && !summaryOnly(err) && !bytes.Contains([]byte(err.Error()), []byte("remote side exited")) {
 			fmt.Fprintf(stdio.Stderr, "rsync: %v\n", err)
 		}
 		return ExitCode(err)
@@ -595,7 +595,7 @@ func Main(ctx context.Context, args []string, stdio Stdio) int {
 	_, err = c.Run(ctx, o, operands)
 	if err != nil {
 		code := ExitCode(err)
-		if ee, ok := err.(*ExitError); ok && ee.Err == nil {
+		if summaryOnly(err) {
 			fmt.Fprintf(stdio.Stderr, "rsync error: %s (code %d)\n", codeText(code), code)
 			return code
 		}
@@ -639,6 +639,17 @@ func codeText(code int) string {
 		return "received SIGINT, SIGTERM, or SIGHUP"
 	}
 	return "unexplained error"
+}
+
+// summaryOnly reports whether err says no more than its exit code's
+// summary, which rsync prints alone, the details having been reported
+// as they happened.
+func summaryOnly(err error) bool {
+	var ee *ExitError
+	if !errors.As(err, &ee) {
+		return false
+	}
+	return ee.Err == nil || ee.Err.Error() == codeText(ee.Code)
 }
 
 // Version is the version of this implementation. Release builds set it

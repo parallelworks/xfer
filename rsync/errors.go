@@ -52,7 +52,7 @@ type ExitError struct {
 // naming the exit code when there is none.
 func (e *ExitError) Error() string {
 	if e.Err == nil {
-		return fmt.Sprintf("rsync error: exit code %d", e.Code)
+		return fmt.Sprintf("%s (code %d)", codeText(e.Code), e.Code)
 	}
 	return e.Err.Error()
 }

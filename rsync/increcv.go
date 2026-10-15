@@ -224,7 +224,7 @@ func (rv *receiving) precreateDir(f *flist.File) {
 	}
 	if err == nil {
 		if err := rv.deleteForReplace(name, fi); err != nil {
-			rv.s.sendError("delete of %q failed: %s", name, errnoText(err))
+			rv.s.sendError("delete of %q failed: %s", rv.full(name), errnoText(err))
 			return
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
