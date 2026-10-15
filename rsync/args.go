@@ -72,6 +72,19 @@ func unsupported(long string, short rune, arg argKind) option {
 	}
 }
 
+func basisOpt(long string, mode BasisMode) option {
+	return option{long: []string{long}, arg: argString, noNeg: true, set: func(o *Options, v string) error {
+		if len(o.BasisDirs) > 0 && o.BasisMode != mode {
+			return usagef("You may not mix --compare-dest, --copy-dest, and --link-dest.")
+		}
+		if len(o.BasisDirs) >= 20 {
+			return usagef("ERROR: at most 20 --%s args may be specified", long)
+		}
+		o.BasisDirs, o.BasisMode = append(o.BasisDirs, v), mode
+		return nil
+	}}
+}
+
 // ignored options are accepted for compatibility and have no effect.
 func ignored(long string, short rune, arg argKind) option {
 	return option{long: []string{long}, short: short, arg: arg,
@@ -260,9 +273,9 @@ var optionTable = []option{
 		o.BlockSize = int(n)
 		return nil
 	}},
-	unsupported("compare-dest", 0, argString),
-	unsupported("copy-dest", 0, argString),
-	unsupported("link-dest", 0, argString),
+	basisOpt("compare-dest", BasisCompare),
+	basisOpt("copy-dest", BasisCopy),
+	basisOpt("link-dest", BasisLink),
 	unsupported("fuzzy", 'y', argNone),
 	{long: []string{"compress"}, short: 'z',
 		set:   func(o *Options, _ string) error { o.Compress = true; return nil },

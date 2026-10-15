@@ -428,6 +428,59 @@ func checkBackupDir(t *testing.T, src, dst, out string) {
 	}
 }
 
+// prevTree makes ../prev, an older copy of the source in which big.bin
+// differs.
+func prevTree(t *testing.T, src, dst string) {
+	prev := filepath.Join(filepath.Dir(dst), "prev")
+	os.Mkdir(prev, 0o755)
+	copyTree(t, src, prev)
+	big := filepath.Join(prev, "big.bin")
+	data := mustRead(t, big)
+	copy(data[1000:], "CHANGED")
+	os.WriteFile(big, data, 0o644)
+}
+
+func sameInode(t *testing.T, a, b string) bool {
+	fa, err := os.Stat(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fb, err := os.Stat(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return os.SameFile(fa, fb)
+}
+
+func checkBasisDest(mode string) func(t *testing.T, src, dst, out string) {
+	return func(t *testing.T, src, dst, out string) {
+		prev := filepath.Join(filepath.Dir(dst), "prev")
+		if mode == "compare" {
+			if _, err := os.Lstat(filepath.Join(dst, "a.txt")); err == nil {
+				t.Error("a.txt is unchanged in the compare-dest but was copied")
+			}
+			if !bytes.Equal(mustRead(t, filepath.Join(dst, "big.bin")), mustRead(t, filepath.Join(src, "big.bin"))) {
+				t.Error("big.bin differs")
+			}
+			return
+		}
+		// Links into prev add to the link counts.
+		dsnap := snapshot(t, dst, true, true)
+		for k, v := range dsnap {
+			dsnap[k] = regexp.MustCompile(` nlink=\d+`).ReplaceAllString(v, "")
+		}
+		if d := diffSnapshots(snapshot(t, src, true, true), dsnap); d != "" {
+			t.Errorf("destination differs:\n%s", d)
+		}
+		if linked := sameInode(t, filepath.Join(prev, "a.txt"), filepath.Join(dst, "a.txt")); linked != (mode == "link") {
+			t.Errorf("a.txt linked=%v, want %v", linked, mode == "link")
+		}
+		if sameInode(t, filepath.Join(prev, "big.bin"), filepath.Join(dst, "big.bin")) {
+			t.Error("big.bin was linked to a different file")
+		}
+	}
+}
+
 func mustRead(t *testing.T, p string) []byte {
 	b, err := os.ReadFile(p)
 	if err != nil {
@@ -483,6 +536,9 @@ var scenarios = []scenario{
 	{name: "delay-updates-hardlinks", opts: []string{"-aH", "--delay-updates"}, prepare: addHardlinks, times: true},
 	{name: "backup", opts: []string{"-a", "-b", "--delete", "--no-W"}, prepare: staleDest, check: checkBackup},
 	{name: "backup-dir", opts: []string{"-a", "--backup-dir=../bak", "--delete", "--no-W"}, prepare: staleDest, check: checkBackupDir},
+	{name: "link-dest", opts: []string{"-a", "--link-dest=../prev", "--no-W"}, prepare: prevTree, check: checkBasisDest("link")},
+	{name: "copy-dest", opts: []string{"-a", "--copy-dest=../prev", "--no-W"}, prepare: prevTree, check: checkBasisDest("copy")},
+	{name: "compare-dest", opts: []string{"-a", "--compare-dest=../prev", "--no-W"}, prepare: prevTree, check: checkBasisDest("compare")},
 	{name: "sparse", opts: []string{"-a", "-S"}, prepare: sparseFile, check: checkSparse},
 	{name: "timeout", opts: []string{"-a", "--timeout=1", "--delete", "--no-W"}, prepare: staleDest, times: true},
 	{name: "copy-unsafe-links", opts: []string{"-a", "--copy-unsafe-links"}, prepare: unsafeLinks, check: checkUnsafeLinks},

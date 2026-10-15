@@ -543,6 +543,12 @@ func serverArgs(o *Options, push bool) []string {
 	if o.ChecksumSeed != 0 {
 		args = append(args, "--checksum-seed="+strconv.Itoa(int(o.ChecksumSeed)))
 	}
+	if push {
+		opt := [...]string{BasisCompare: "--compare-dest=", BasisCopy: "--copy-dest=", BasisLink: "--link-dest="}[o.BasisMode]
+		for _, d := range o.BasisDirs {
+			args = append(args, opt+d)
+		}
+	}
 	if push && o.backups() {
 		args = append(args, "--backup")
 		if o.BackupDir != "" {

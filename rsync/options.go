@@ -88,6 +88,13 @@ type Options struct {
 	Fsync        bool
 	BlockSize    int // -B; 0 picks per file
 
+	// BasisDirs are directories holding older copies of the destination
+	// (--compare-dest, --copy-dest, --link-dest), searched in order for a
+	// file the destination lacks. Relative ones are relative to the
+	// destination.
+	BasisDirs []string
+	BasisMode BasisMode
+
 	// Backups of files that are replaced or deleted.
 	Backup    bool   // -b
 	BackupDir string // --backup-dir; implies Backup
@@ -156,3 +163,13 @@ func (o *Options) BackupSuffix() string {
 }
 
 func (o *Options) backups() bool { return o.Backup || o.BackupDir != "" }
+
+// BasisMode says what to do with a file found unchanged in a basis
+// directory.
+type BasisMode int
+
+const (
+	BasisCompare BasisMode = iota // skip it (--compare-dest)
+	BasisCopy                     // copy it into the destination (--copy-dest)
+	BasisLink                     // hard-link it into the destination (--link-dest)
+)

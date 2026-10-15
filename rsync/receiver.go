@@ -58,7 +58,8 @@ type receiving struct {
 	delLimit  bool
 	followers []int // hard-link followers to link after transfers
 
-	delayed []string // --delay-updates: files waiting in the partial directory
+	delayed  []string         // --delay-updates: files waiting in the partial directory
+	altBasis map[int32]string // delta bases found in --*-dest directories
 }
 
 // recvEvent is the receiver telling the generator something: a file to
@@ -81,6 +82,7 @@ func (s *session) receiveFiles(files []*flist.File, users, groups map[uint32]str
 		umask:      currentUmask(),
 		precreated: map[string]bool{},
 		names:      map[[2]any]bool{},
+		altBasis:   map[int32]string{},
 	}
 	if !s.opts.ListOnly {
 		if err := rv.openDest(dest); err != nil {
@@ -470,6 +472,17 @@ func (rv *receiving) genFile(ndx int32, f *flist.File, redo bool) (requested boo
 		}
 	}
 
+	var altBasis string
+	if !exists && !redo && len(o.BasisDirs) > 0 {
+		var done bool
+		if done, altBasis = rv.tryBasisDirs(ndx, f, name); done {
+			if o.RemoveSourceFiles {
+				s.out.SendMsgInt(wire.MsgSuccess, ndx)
+			}
+			return false, nil
+		}
+	}
+
 	iflags = itemTransfer
 	if o.Checksum {
 		iflags |= itemReportChange
@@ -484,6 +497,14 @@ func (rv *receiving) genFile(ndx int32, f *flist.File, redo bool) (requested boo
 	var sums []byte
 	if !rv.wholeFile() && !o.DryRun {
 		basis := rv.openBasis(name, exists)
+		if basis == nil && altBasis != "" {
+			if b, err := os.Open(altBasis); err == nil {
+				basis = b
+				rv.mu.Lock()
+				rv.altBasis[ndx] = altBasis
+				rv.mu.Unlock()
+			}
+		}
 		if basis != nil {
 			if bfi, err := basis.Stat(); err == nil && bfi.Size() > 0 {
 				head, sums, err = rv.makeSums(basis, bfi.Size(), redo)
@@ -1139,8 +1160,16 @@ func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr tok
 	// overwritten.
 	var basis *os.File
 	inplace := o.Inplace && rv.root != nil
+	rv.mu.Lock()
+	altBasis, alt := rv.altBasis[req.ndx]
+	delete(rv.altBasis, req.ndx)
+	rv.mu.Unlock()
 	if head.count > 0 && rv.root != nil && !inplace {
-		basis = rv.openBasis(name, true)
+		if alt {
+			basis, _ = os.Open(altBasis)
+		} else {
+			basis = rv.openBasis(name, true)
+		}
 		if basis != nil {
 			defer basis.Close()
 		}
