@@ -481,7 +481,7 @@ func parseArgs(args []string, stdin io.Reader) (*Options, []string, error) {
 		switch {
 		case a == "--":
 			operands = append(operands, args[i+1:]...)
-			return o, operands, o.finish()
+			return o.done(operands)
 		case strings.HasPrefix(a, "--"):
 			name, val, hasVal := strings.Cut(a[2:], "=")
 			if opt, ok := longIndex[name]; ok {
@@ -537,12 +537,12 @@ func parseArgs(args []string, stdin io.Reader) (*Options, []string, error) {
 			// the server's operands; what follows are paths, even
 			// ones that begin with '-'.
 			operands = append(operands, args[i:]...)
-			return o, operands, o.finish()
+			return o.done(operands)
 		default:
 			operands = append(operands, a)
 		}
 	}
-	return o, operands, o.finish()
+	return o.done(operands)
 }
 
 func (o *Options) apply(opt *option, val string) error {
@@ -598,6 +598,14 @@ func (o *Options) finish() error {
 		o.Links = false
 	}
 	return nil
+}
+
+// done completes a parse: options and operands, or only the error.
+func (o *Options) done(operands []string) (*Options, []string, error) {
+	if err := o.finish(); err != nil {
+		return nil, nil, err
+	}
+	return o, operands, nil
 }
 
 func (o *Options) addRulesFrom(path, prefix string) error {

@@ -1,0 +1,3 @@
+go test fuzz v1
+string("--partial-dir=/\x00--delay-updates")
+bool(false)

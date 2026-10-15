@@ -650,6 +650,11 @@ func serverArgs(o *Options, push bool) []string {
 	}
 	if push {
 		switch {
+		case o.DelayUpdates && !o.Partial:
+			// The partial directory is only the one --delay-updates
+			// implies, which the server works out the same way; sending
+			// it would also turn on --partial there.
+			args = append(args, "--delay-updates")
 		case o.PartialDir != "":
 			args = append(args, "--partial-dir", o.PartialDir)
 			if o.DelayUpdates {
