@@ -5,7 +5,8 @@
 
 Every row runs push and pull over a fake remote shell (the "remote" side is
 started through sh on the same machine), RUNS times each, and reports the
-median wall time and the peak RSS. Run it on Linux with GNU rsync installed
+median wall time and the peak RSS of the larger of the client and server
+processes (measured with GNU time when it is installed). Run it on Linux with GNU rsync installed
 (on Alpine: apk add rsync python3):
 
     python3 bench/bench.py --xfer ./xfer --dir /mem/bench [--runs 5] [--only ROW]
@@ -29,9 +30,10 @@ import statistics
 import subprocess
 import sys
 
-# MEASURE runs a command and reports its wall time and the peak RSS (KiB)
-# of the largest process in its tree; the client waits for the server, so
-# both sides are covered.
+# MEASURE runs a command and reports its wall time. Its peak-RSS figure is
+# only a fallback: Linux carries a parent's high-water mark across exec, so
+# a child of Python never reports less than Python's own footprint. With
+# GNU time available (see peak_rss) each process is measured on its own.
 MEASURE = """
 import resource, subprocess, sys, time
 t = time.monotonic()
@@ -153,13 +155,50 @@ def run_ssh(a, impl, base, direction):
     return measure(impl, "ssh-initial", direction, argv)
 
 
-def measure(impl, row, direction, argv):
+# TIME is GNU time, when installed (on Alpine: apk add time). It reports the
+# peak RSS of the one process it runs, which it starts itself, so the
+# figure does not inherit Python's. The client and the server each run
+# under it, and a row's figure is the larger of the two.
+TIME = None
+
+
+def find_time(base):
+    global TIME
+    out = os.path.join(base, ".time-check")
+    for t in ("/usr/bin/time", shutil.which("gtime") or ""):
+        if t and subprocess.call([t, "-f", "%M", "-o", out, "true"], stderr=subprocess.DEVNULL) == 0:
+            TIME = t
+            return
+
+
+def timed(argv, out):
+    """Wraps argv to record its peak RSS (KiB) in out, if GNU time exists."""
+    return [TIME, "-f", "%M", "-o", out] + argv if TIME else argv
+
+
+def peak(path):
+    try:
+        with open(path) as fh:
+            v = int(fh.read().split()[-1])
+        os.remove(path)
+        return v
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def measure(impl, row, direction, argv, base=None):
     sh("sync")
+    cfile = sfile = None
+    if TIME and base:
+        cfile, sfile = os.path.join(base, ".rss-client"), os.path.join(base, ".rss-server")
+        argv = timed(argv, cfile)
     r = subprocess.run([sys.executable, "-c", MEASURE] + argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     line = [l for l in r.stderr.splitlines() if l.startswith("TIME ")]
     if r.returncode != 0 or not line:
         sys.exit("%s %s %s failed (%d):\n%s" % (impl.name, row, direction, r.returncode, r.stderr))
     _, secs, rss = line[-1].split()
+    if cfile:
+        rss = max(peak(cfile), peak(sfile))
     return float(secs), int(rss)
 
 
@@ -167,12 +206,13 @@ def run_once(impl, row, base, direction):
     dst = os.path.join(base, "dst-" + impl.name)
     prepare(row, base, dst)
     opts, src = row_args(row, base)
-    shell = ["-e", os.path.join(base, "fakessh"), "--rsync-path=" + impl.server]
+    server = " ".join(timed([impl.server], os.path.join(base, ".rss-server")))
+    shell = ["-e", os.path.join(base, "fakessh"), "--rsync-path=" + server]
     if direction == "push":
         argv = impl.client + opts + shell + [src, "host:" + dst + "/"]
     else:
         argv = impl.client + opts + shell + ["host:" + src, dst + "/"]
-    return measure(impl, row, direction, argv)
+    return measure(impl, row, direction, argv, base)
 
 
 def main():
@@ -189,6 +229,9 @@ def main():
     a = ap.parse_args()
     base = os.path.abspath(a.dir)
     setup(base)
+    find_time(base)
+    if not TIME:
+        print("GNU time not found: RSS figures include the Python parent's", file=sys.stderr)
     xfer = os.path.abspath(a.xfer)
     impls = [Impl("gnu", [a.rsync], a.rsync), Impl("xfer", [xfer, "rsync"], xfer + " rsync")]
     results = []
