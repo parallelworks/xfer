@@ -29,6 +29,9 @@ type Client struct {
 
 	// Stdout and Stderr receive progress and diagnostics.
 	Stdout, Stderr io.Writer
+
+	// Stdin is read for --files-from=-; nil means os.Stdin.
+	Stdin io.Reader
 }
 
 // location is a parsed SRC or DEST operand.
@@ -95,6 +98,16 @@ func (c *Client) Run(ctx context.Context, o *Options, operands []string) (*Stats
 			return nil, err
 		}
 	}
+	if o.FilesFrom != "" && len(srcs) != 1 {
+		return nil, &UsageError{"--files-from requires exactly one source directory"}
+	}
+	var filesFrom []string
+	if _, remote := filesFromRemote(o.FilesFrom); o.FilesFrom != "" && !remote {
+		var err error
+		if filesFrom, err = openFilesFrom(o.FilesFrom, c.Stdin, o.From0); err != nil {
+			return nil, err
+		}
+	}
 	if srcs[0].host != "" && dest.host != "" {
 		return nil, &UsageError{"The source and destination cannot both be remote."}
 	}
@@ -152,6 +165,7 @@ func (c *Client) Run(ctx context.Context, o *Options, operands []string) (*Stats
 
 	s := newSession(o, conn, false, push, log)
 	s.localTransfer = local
+	s.filesFrom = filesFrom
 	err := s.runTimed(func() error { return s.runClient(conn, srcs, dest, push) })
 	if s.timedOut.Load() {
 		conn.Close()
@@ -265,6 +279,15 @@ func (s *session) runClient(conn io.ReadWriter, srcs []location, dest location, 
 		for _, l := range srcs {
 			paths = append(paths, l.path)
 		}
+		if o.FilesFrom != "" {
+			names := s.filesFrom
+			if _, remote := filesFromRemote(o.FilesFrom); remote {
+				if names, err = s.recvNames(); err != nil {
+					return err
+				}
+			}
+			paths = filesFromPaths(paths[0], names)
+		}
 		if _, err := s.sendFileList(paths, localRules(o, filters)); err != nil {
 			return err
 		}
@@ -272,6 +295,9 @@ func (s *session) runClient(conn io.ReadWriter, srcs []location, dest location, 
 	}
 	if err := s.sendFilterList(filters, false); err != nil {
 		return err
+	}
+	if _, remote := filesFromRemote(o.FilesFrom); o.FilesFrom != "" && !remote {
+		go s.forwardNames(s.filesFrom)
 	}
 	files, users, groups, err := s.recvFileList()
 	if err != nil {
@@ -547,6 +573,17 @@ func serverArgs(o *Options, push bool) []string {
 		opt := [...]string{BasisCompare: "--compare-dest=", BasisCopy: "--copy-dest=", BasisLink: "--link-dest="}[o.BasisMode]
 		for _, d := range o.BasisDirs {
 			args = append(args, opt+d)
+		}
+	}
+	if o.FilesFrom != "" {
+		if p, remote := filesFromRemote(o.FilesFrom); remote {
+			args = append(args, "--files-from="+p)
+			if o.From0 {
+				args = append(args, "--from0")
+			}
+		} else if !push {
+			// We read the list and forward it to the sender.
+			args = append(args, "--files-from=-", "--from0")
 		}
 	}
 	if push && o.backups() {

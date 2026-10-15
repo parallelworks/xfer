@@ -30,7 +30,7 @@ func runMain(t *testing.T, args ...string) (int, string, string) {
 // halves of the protocol run in this process. It needs no other rsync.
 func TestLocal(t *testing.T) {
 	for _, sc := range scenarios {
-		if sc.name == "protect-args" {
+		if sc.name == "protect-args" || sc.name == "files-from-remote" {
 			continue // meaningless without a remote shell
 		}
 		if sc.name == "protocol-29" && fips140.Enabled() {
@@ -46,7 +46,7 @@ func TestLocal(t *testing.T) {
 			if sc.prepare != nil {
 				sc.prepare(t, src, dst)
 			}
-			args := append(append([]string{}, sc.opts...), src+"/", dst+"/")
+			args := append(expandOpts(sc.opts, base), src+"/", dst+"/")
 			code, stdout, stderr := runMain(t, args...)
 			if code != 0 {
 				t.Fatalf("rsync %s: exit %d\n%s%s", strings.Join(args, " "), code, stdout, stderr)

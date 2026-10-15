@@ -110,6 +110,8 @@ type session struct {
 	// that arrives after the first.
 	onSubList func(l *fileList)
 
+	filesFrom []string // the client's --files-from list, when it read it
+
 	onSuccess func(ndx int32)
 	onNoSend  func(ndx int32)
 

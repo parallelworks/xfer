@@ -340,8 +340,8 @@ var optionTable = []option{
 	unsupported("read-batch", 0, argString),
 	unsupported("write-batch", 0, argString),
 	unsupported("only-write-batch", 0, argString),
-	unsupported("files-from", 0, argString),
-	unsupported("from0", '0', argNone),
+	strOpt("files-from", 0, func(o *Options) *string { return &o.FilesFrom }),
+	boolOpt("from0", '0', func(o *Options) *bool { return &o.From0 }),
 	ignored("old-args", 0, argNone),
 	{long: []string{"secluded-args", "protect-args"}, short: 's',
 		set:   func(o *Options, _ string) error { o.ProtectArgs = true; return nil },
@@ -534,6 +534,19 @@ func (o *Options) apply(opt *option, val string) error {
 
 // finish applies rsync's option implications once everything is parsed.
 func (o *Options) finish() error {
+	if o.FilesFrom != "" {
+		// The list names what to send: paths are relative, named
+		// directories are sent, and -a no longer means -r.
+		if !o.set["relative"] {
+			o.Relative = true
+		}
+		if !o.set["dirs"] {
+			o.Dirs = true
+		}
+		if o.Recursive && !o.set["recursive"] {
+			o.Recursive = false
+		}
+	}
 	if o.Relative && !o.set["implied-dirs"] {
 		o.ImpliedDirs = true
 	}

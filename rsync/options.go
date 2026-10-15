@@ -95,6 +95,13 @@ type Options struct {
 	BasisDirs []string
 	BasisMode BasisMode
 
+	// FilesFrom names a list of files to transfer, relative to the single
+	// source directory: a local file, "-" for standard input, or
+	// "host:path" / ":path" on the remote host. From0 says its names end
+	// in NUL bytes instead of newlines.
+	FilesFrom string
+	From0     bool
+
 	// Backups of files that are replaced or deleted.
 	Backup    bool   // -b
 	BackupDir string // --backup-dir; implies Backup

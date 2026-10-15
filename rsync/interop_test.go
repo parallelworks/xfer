@@ -481,6 +481,38 @@ func checkBasisDest(mode string) func(t *testing.T, src, dst, out string) {
 	}
 }
 
+// filesFromList writes the --files-from lists ../list and ../list0.
+func filesFromList(t *testing.T, src, dst string) {
+	base := filepath.Dir(src)
+	os.WriteFile(filepath.Join(base, "list"), []byte("a.txt\n\ndir/nested/deep.txt\ndir/emptydir\nname with spaces.txt\n"), 0o644)
+	os.WriteFile(filepath.Join(base, "list0"), []byte("a.txt\x00dir/nested/deep.txt\x00dir/emptydir\x00name with spaces.txt\x00"), 0o644)
+}
+
+func checkFilesFrom(t *testing.T, src, dst, out string) {
+	got := snapshot(t, dst, false, false)
+	want := []string{".", "a.txt", "dir", "dir/emptydir", "dir/nested", "dir/nested/deep.txt", "name with spaces.txt"}
+	var names []string
+	for k := range got {
+		names = append(names, k)
+	}
+	slices.Sort(names)
+	if !slices.Equal(names, want) {
+		t.Errorf("got %q, want %q", names, want)
+	}
+	if !bytes.Equal(mustRead(t, filepath.Join(dst, "dir/nested/deep.txt")), mustRead(t, filepath.Join(src, "dir/nested/deep.txt"))) {
+		t.Error("deep.txt differs")
+	}
+}
+
+// expandOpts fills in "{base}", the directory holding src and dst.
+func expandOpts(opts []string, base string) []string {
+	out := make([]string, len(opts))
+	for i, o := range opts {
+		out[i] = strings.ReplaceAll(o, "{base}", base)
+	}
+	return out
+}
+
 func mustRead(t *testing.T, p string) []byte {
 	b, err := os.ReadFile(p)
 	if err != nil {
@@ -539,6 +571,9 @@ var scenarios = []scenario{
 	{name: "link-dest", opts: []string{"-a", "--link-dest=../prev", "--no-W"}, prepare: prevTree, check: checkBasisDest("link")},
 	{name: "copy-dest", opts: []string{"-a", "--copy-dest=../prev", "--no-W"}, prepare: prevTree, check: checkBasisDest("copy")},
 	{name: "compare-dest", opts: []string{"-a", "--compare-dest=../prev", "--no-W"}, prepare: prevTree, check: checkBasisDest("compare")},
+	{name: "files-from", opts: []string{"-a", "--files-from={base}/list"}, prepare: filesFromList, check: checkFilesFrom},
+	{name: "files-from0", opts: []string{"-a", "--from0", "--files-from={base}/list0"}, prepare: filesFromList, check: checkFilesFrom},
+	{name: "files-from-remote", opts: []string{"-a", "--files-from=:{base}/list"}, prepare: filesFromList, check: checkFilesFrom},
 	{name: "sparse", opts: []string{"-a", "-S"}, prepare: sparseFile, check: checkSparse},
 	{name: "timeout", opts: []string{"-a", "--timeout=1", "--delete", "--no-W"}, prepare: staleDest, times: true},
 	{name: "copy-unsafe-links", opts: []string{"-a", "--copy-unsafe-links"}, prepare: unsafeLinks, check: checkUnsafeLinks},
@@ -631,7 +666,7 @@ func TestInterop(t *testing.T) {
 					if pr.client.name == "openrsync" || pr.server.name == "openrsync" {
 						if slices.ContainsFunc(sc.opts, func(o string) bool {
 							return strings.HasPrefix(o, "--compress-choice") || strings.HasPrefix(o, "--checksum-choice") ||
-								o == "-s" || o == "--inplace" || o == "--delete-after" || o == "--no-inc-recursive" || o == "--delay-updates" || o == "-b" || strings.HasPrefix(o, "--backup-dir") || o == "--copy-unsafe-links" || strings.HasPrefix(o, "--protocol")
+								o == "-s" || o == "--inplace" || o == "--delete-after" || o == "--no-inc-recursive" || o == "--delay-updates" || o == "-b" || strings.HasPrefix(o, "--files-from=:") || strings.HasPrefix(o, "--backup-dir") || o == "--copy-unsafe-links" || strings.HasPrefix(o, "--protocol")
 						}) {
 							t.Skip("not supported by openrsync")
 						}
@@ -684,7 +719,7 @@ func runScenario(t *testing.T, sc scenario, client, server *peer, push bool, ssh
 	}
 
 	args := append([]string{}, client.argv[1:]...)
-	args = append(args, sc.opts...)
+	args = append(args, expandOpts(sc.opts, base)...)
 	args = append(args, "-e", ssh, "--rsync-path="+server.server)
 	if push {
 		args = append(args, src+"/", "host:"+dst+"/")

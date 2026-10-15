@@ -98,6 +98,22 @@ func (s *session) runServer(clientInfo string, paths []string) error {
 		if o.CVSExclude {
 			filters = filter.NewList(append(filter.CVSRules(), filters.Rules()...))
 		}
+		if o.FilesFrom != "" {
+			var names []string
+			if o.FilesFrom == "-" {
+				names, err = s.recvNames()
+			} else {
+				names, err = openFilesFrom(o.FilesFrom, nil, o.From0)
+			}
+			if err != nil {
+				return err
+			}
+			dir := "."
+			if len(paths) > 0 {
+				dir = paths[0]
+			}
+			paths = filesFromPaths(dir, names)
+		}
 		files, err := s.sendFileList(paths, localRules(o, filters))
 		if err != nil {
 			return err
@@ -106,6 +122,14 @@ func (s *session) runServer(clientInfo string, paths []string) error {
 			return s.out.Flush()
 		}
 		return s.sendFiles()
+	}
+	if o.FilesFrom != "" && o.FilesFrom != "-" {
+		// The list is here; the sender needs it.
+		names, err := openFilesFrom(o.FilesFrom, nil, o.From0)
+		if err != nil {
+			return err
+		}
+		go s.forwardNames(names)
 	}
 	filters := filter.NewList(nil)
 	if receiverWantsList(o, s.proto) {
@@ -534,7 +558,7 @@ func Main(ctx context.Context, args []string, stdio Stdio) int {
 		}
 		return ExitCode(err)
 	}
-	c := &Client{Stdout: stdio.Stdout, Stderr: stdio.Stderr}
+	c := &Client{Stdout: stdio.Stdout, Stderr: stdio.Stderr, Stdin: stdio.Stdin}
 	_, err = c.Run(ctx, o, operands)
 	if err != nil {
 		code := ExitCode(err)
