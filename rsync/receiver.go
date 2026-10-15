@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/parallelworks/xfer/rsync/internal/checksum"
@@ -42,8 +43,9 @@ type receiving struct {
 	root   *dtree // destination; nil in a dry run whose destination does not exist
 	single string // when copying one file onto a file name: that name
 
-	destCreated bool // openDest made the destination directory
-	made        int  // entries the generator created
+	destCreated bool        // openDest made the destination directory
+	pending     atomic.Bool // the generator's buffered output holds requests or items
+	made        int         // entries the generator created
 	umask       uint32
 
 	// ids maps the sender's uids and gids to ours.
@@ -126,9 +128,15 @@ func (s *session) receiveFiles(files []*flist.File, users, groups map[uint32]str
 	}
 
 	// From here the generator flushes its output when it would block, as
-	// rsync's does; the receiver's reads must not flush it at other times,
-	// which would make the order of the output depend on timing.
-	s.demux.BeforeBlock = nil
+	// rsync's does. While it holds requests or items the receiver's reads
+	// must not flush them, which would make the order of the output
+	// depend on timing; anything else, such as the NDX_DONE that lets the
+	// sender go on to further lists, is better sent at once.
+	s.demux.BeforeBlock = func() {
+		if !rv.pending.Load() {
+			s.out.TryFlush()
+		}
+	}
 	genErr := make(chan error, 1)
 	go func() {
 		if s.inc {
@@ -311,6 +319,13 @@ func (rv *receiving) gid(f *flist.File) uint32 {
 // generator ----------------------------------------------------------------
 
 // deltaNotice says, at -vv, whether files are sent as deltas.
+// flush sends the generator's buffered output.
+func (rv *receiving) flush() error {
+	err := rv.s.out.Flush()
+	rv.pending.Store(false)
+	return err
+}
+
 func (rv *receiving) deltaNotice() {
 	if rv.s.log.lv.debug[debugDeltasum] == 0 || rv.o.ListOnly {
 		return
@@ -372,7 +387,7 @@ func (rv *receiving) phases(endPhase0 bool) error {
 	// waitAck processes redo requests until the receiver acknowledges
 	// the end of a phase.
 	waitAck := func() error {
-		if err := w.Flush(); err != nil {
+		if err := rv.flush(); err != nil {
 			return err
 		}
 		for ev := range rv.events {
@@ -389,7 +404,7 @@ func (rv *receiving) phases(endPhase0 bool) error {
 			if _, err := rv.genFile(ev.redo, f, true); err != nil {
 				return err
 			}
-			w.Flush()
+			rv.flush()
 		}
 		return errReceiverStopped
 	}
@@ -462,7 +477,7 @@ func (rv *receiving) phases(endPhase0 bool) error {
 	if err := done(); err != nil {
 		return err
 	}
-	return w.Flush()
+	return rv.flush()
 }
 
 var errReceiverStopped = errors.New("receiver stopped")
@@ -592,6 +607,7 @@ func (rv *receiving) genFile(ndx int32, f *flist.File, redo bool) (requested boo
 	w.Lock()
 	defer w.Unlock()
 	s.writeRequest(request{ndx: ndx, iflags: iflags})
+	rv.pending.Store(true)
 	s.countCreated(f, iflags)
 	if !o.DryRun {
 		s.writeSumHead(head)
@@ -697,7 +713,7 @@ func (rv *receiving) destChecksum(name string) ([]byte, error) {
 	if rv.root == nil {
 		return nil, fs.ErrNotExist
 	}
-	return fileChecksum(path.Join(rv.root.Name(), name), rv.s.fileSum)
+	return fileChecksum(path.Join(rv.root.Name(), name), rv.s.fileSum, rv.o.OpenNoatime)
 }
 
 func sameTime(t time.Time, f *flist.File, window time.Duration) bool {
@@ -764,6 +780,7 @@ func (rv *receiving) itemize(ndx int32, f *flist.File, iflags uint32) {
 	}
 	s.out.Lock()
 	s.writeRequest(request{ndx: ndx, iflags: iflags})
+	rv.pending.Store(true)
 	s.out.Unlock()
 	s.countCreated(f, iflags)
 }
@@ -1118,7 +1135,7 @@ func (rv *receiving) linkFollowers() {
 			rv.s.sendError("link %q => %q failed: %s", name, target, errnoText(err))
 			continue
 		}
-		if !rv.s.server && rv.s.log.format != "" {
+		if !rv.s.server && rv.s.log.logs() {
 			rv.s.log.item(f, itemLocalChange|itemXnameFollows, leader.Name)
 		}
 	}
@@ -1330,7 +1347,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr tok
 	}
 
 	if !s.server {
-		if s.log.format != "" && !s.logAfter() {
+		if s.log.logs() && !s.logAfter() {
 			s.log.item(f, req.iflags, req.xname)
 		}
 		rem, total, more := s.lists.toCheck(req.ndx)
@@ -1341,6 +1358,9 @@ func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr tok
 	fileHash.Reset()
 	var bw *bufio.Writer
 	ow := &offsetWriter{f: tmp, sparse: o.Sparse && !inplace}
+	if tmp != nil && o.Preallocate && !ow.sparse && f.Size > 0 && !o.DryRun {
+		preallocate(tmp, f.Size) // a failure only loses the optimization
+	}
 	if tmp != nil {
 		if rv.bw == nil {
 			rv.bw = bufio.NewWriterSize(ow, 256<<10)
@@ -1494,7 +1514,7 @@ func (rv *receiving) receiveFile(req request, f *flist.File, l *fileList, tr tok
 	}
 	s.stats.NumTransferred++
 	s.stats.TotalTransferredSize += f.Size
-	if !s.server && s.log.format != "" && s.logAfter() {
+	if !s.server && s.log.logs() && s.logAfter() {
 		s.log.item(f, req.iflags, req.xname)
 	}
 	if o.RemoveSourceFiles && s.proto >= 30 || o.RemoveSourceFiles && !s.server {
@@ -1657,7 +1677,7 @@ func (rv *receiving) deleteEntry(local, wn string, e fs.DirEntry) {
 	rv.deleted[kind]++
 	rv.mu.Unlock()
 	if s.server {
-		if s.proto >= 29 && (o.Verbose > 0 || s.log.hasI > 0) {
+		if s.proto >= 29 && (o.Verbose > 0 || s.log.hasI > 0 || s.reportDeletes) {
 			payload := []byte(wn)
 			if kind == 1 {
 				payload = append(payload, 0)

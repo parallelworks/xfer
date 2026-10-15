@@ -27,7 +27,8 @@ import (
 // copy, a run with nothing to do, and a run after the source changed. The
 // no-op output must match exactly; for the others the parts that depend on
 // timing are masked (see normalize). Even rsync's byte counts vary by a
-// few bytes from run to run, with the framing of its output, so those are
+// few bytes from run to run, with the framing of its output (the file
+// list size counts frame headers too), so those are
 // compared with a tolerance. The cases leave out -o and -g, whose user and
 // group names would make the counts depend on the machine, and %l, which
 // for a directory depends on the filesystem.
@@ -139,7 +140,7 @@ var (
 	reSpeedup  = regexp.MustCompile(`speedup is [0-9.,]+`)
 	reFlTime   = regexp.MustCompile(`(File list (generation|transfer) time:) .*`)
 	reProgRate = regexp.MustCompile(` +[0-9.]+[kMG]B/s +[0-9]+:[0-9]{2}:[0-9]{2}`)
-	reBytes    = regexp.MustCompile(`(sent|received|Total bytes sent:|Total bytes received:) ([0-9,.]+[KMG]?)`)
+	reBytes    = regexp.MustCompile(`(sent|received|Total bytes sent:|Total bytes received:|File list size:) ([0-9,.]+[KMG]?)`)
 )
 
 // normalize masks what depends on timing: rates and times, the

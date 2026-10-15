@@ -372,7 +372,7 @@ func (sc *scanner) checksumAll() {
 		go func() {
 			defer wg.Done()
 			for f := range work {
-				f.Checksum, _ = fileChecksum(f.Source, alg)
+				f.Checksum, _ = fileChecksum(f.Source, alg, sc.s.opts.OpenNoatime)
 			}
 		}()
 	}
@@ -390,11 +390,11 @@ func (sc *scanner) checksumAll() {
 // every file with --checksum.
 var sumBufPool = sync.Pool{New: func() any { b := make([]byte, 256<<10); return &b }}
 
-func fileChecksum(p string, alg checksum.Algorithm) ([]byte, error) {
+func fileChecksum(p string, alg checksum.Algorithm, noatime bool) ([]byte, error) {
 	if alg == checksum.MD4Old {
 		alg = checksum.MD4 // file-list sums are never seeded
 	}
-	file, err := openFast(p)
+	file, err := openSource(p, noatime)
 	if err != nil {
 		return make([]byte, alg.Size()), err
 	}

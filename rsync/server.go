@@ -33,10 +33,19 @@ import (
 // package, can call Serve when a session's command line starts with
 // "rsync --server", without installing rsync.
 func Serve(ctx context.Context, args []string, conn io.ReadWriter, stderr io.Writer) error {
-	return serve(ctx, args, conn, stderr, false)
+	return serve(ctx, args, conn, stderr, nil)
 }
 
-func serve(ctx context.Context, args []string, conn io.ReadWriter, stderr io.Writer, local bool) error {
+// localServer configures the server half of a local transfer.
+type localServer struct {
+	// reportDeletes has the server report its deletions to the client
+	// even when not verbose, for the client's events.
+	reportDeletes bool
+}
+
+// serve runs a server; local is set for the server half of a local
+// transfer.
+func serve(ctx context.Context, args []string, conn io.ReadWriter, stderr io.Writer, local *localServer) error {
 	o, operands, err := ParseArgs(args)
 	if err != nil {
 		return err
@@ -44,7 +53,7 @@ func serve(ctx context.Context, args []string, conn io.ReadWriter, stderr io.Wri
 	if !o.Server {
 		return &UsageError{"rsync server mode requires --server"}
 	}
-	if o.ProtectArgs && !local {
+	if o.ProtectArgs && local == nil {
 		more, err := readProtectedArgs(conn)
 		if err != nil {
 			return err
@@ -62,7 +71,8 @@ func serve(ctx context.Context, args []string, conn io.ReadWriter, stderr io.Wri
 	log := newLogger(o, io.Discard, stderr)
 	log.format = "" // a server prints nothing on its own
 	s := newSession(o, conn, true, o.Sender, log)
-	s.localTransfer = local
+	s.localTransfer = local != nil
+	s.reportDeletes = local != nil && local.reportDeletes
 
 	stop := context.AfterFunc(ctx, func() {
 		if c, ok := conn.(io.Closer); ok {
@@ -261,7 +271,7 @@ func (s *session) sendFileList(paths []string, filters *filter.List) ([]*flist.F
 	s.out.Lock()
 	cfg := s.flistConfig()
 	s.enc = flist.NewEncoder(s.out.W, cfg)
-	s.enc.LookupUser, s.enc.LookupGroup = userName, groupName
+	s.enc.LookupUser, s.enc.LookupGroup = s.ids.user, s.ids.group
 	s.lists = newFileLists(s.inc)
 	s.enc.StartList(s.lists.next)
 	if err := s.encodeList(files); err != nil {
@@ -431,40 +441,51 @@ func (s *session) countFiles(files []*flist.File) {
 	}
 }
 
-var (
-	idNames sync.Map // "u1000" -> name
-)
-
-func userName(id uint32) string {
-	key := "u" + strconv.FormatUint(uint64(id), 10)
-	if v, ok := idNames.Load(key); ok {
-		return v.(string)
-	}
-	name := ""
-	if u, err := user.LookupId(strconv.FormatUint(uint64(id), 10)); err == nil {
-		name = u.Username
-	}
-	idNames.Store(key, name)
-	return name
+// idNames caches the user and group names of IDs for one session.
+type idNames struct {
+	mu     sync.Mutex
+	users  map[uint32]string
+	groups map[uint32]string
 }
 
-func groupName(id uint32) string {
-	key := "g" + strconv.FormatUint(uint64(id), 10)
-	if v, ok := idNames.Load(key); ok {
-		return v.(string)
+func (c *idNames) user(id uint32) string {
+	return c.lookup(&c.users, id, func(s string) (string, error) {
+		u, err := user.LookupId(s)
+		if err != nil {
+			return "", err
+		}
+		return u.Username, nil
+	})
+}
+
+func (c *idNames) group(id uint32) string {
+	return c.lookup(&c.groups, id, func(s string) (string, error) {
+		g, err := user.LookupGroupId(s)
+		if err != nil {
+			return "", err
+		}
+		return g.Name, nil
+	})
+}
+
+func (c *idNames) lookup(m *map[uint32]string, id uint32, find func(string) (string, error)) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if name, ok := (*m)[id]; ok {
+		return name
 	}
-	name := ""
-	if g, err := user.LookupGroupId(strconv.FormatUint(uint64(id), 10)); err == nil {
-		name = g.Name
+	if *m == nil {
+		*m = map[uint32]string{}
 	}
-	idNames.Store(key, name)
+	name, _ := find(strconv.FormatUint(uint64(id), 10)) // "" when unknown
+	(*m)[id] = name
 	return name
 }
 
 // startLocalServer runs the server half of a local transfer in this
 // process. The halves talk over OS pipes, whose kernel buffering lets both
 // sides write before reading, as the protocol requires.
-func startLocalServer(ctx context.Context, o *Options, push bool, paths []string, stderr io.Writer) (transport.Conn, chan error, error) {
+func startLocalServer(ctx context.Context, o *Options, push bool, paths []string, stderr io.Writer, local *localServer) (transport.Conn, chan error, error) {
 	args := serverArgs(o, push)
 	if o.WholeFile != nil && !*o.WholeFile {
 		args = append(args, "--no-W") // a local server would otherwise default to whole files
@@ -485,7 +506,7 @@ func startLocalServer(ctx context.Context, o *Options, push bool, paths []string
 	transport.GrowPipe(s2cR)
 	done := make(chan error, 1)
 	go func() {
-		err := serve(ctx, args, &pipeConn{r: c2sR, w: s2cW}, stderr, true)
+		err := serve(ctx, args, &pipeConn{r: c2sR, w: s2cW}, stderr, local)
 		s2cW.Close()
 		c2sR.Close()
 		done <- err
@@ -538,7 +559,11 @@ type stdioConn struct {
 // name) and returns the process exit code. It is the whole rsync command:
 // a program can mount it as a subcommand.
 func Main(ctx context.Context, args []string, stdio Stdio) int {
-	o, operands, err := ParseArgs(args)
+	stdin := stdio.Stdin
+	if stdin == nil {
+		stdin = os.Stdin
+	}
+	o, operands, err := parseArgs(args, stdin)
 	var help *helpError
 	switch {
 	case errors.As(err, &help):

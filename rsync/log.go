@@ -60,9 +60,29 @@ type logger struct {
 	symlinkTimes bool
 
 	progress *progress
+	events   *eventSink // Client.Events, if set
+}
+
+// logs reports whether entries are to be logged: shown in the output
+// format or reported as events.
+func (l *logger) logs() bool { return l.format != "" || l.events != nil }
+
+// setEvents directs events to fn. Progress is then tracked even when it
+// is not shown.
+func (l *logger) setEvents(fn func(Event)) {
+	if fn == nil {
+		return
+	}
+	l.events = &eventSink{fn: fn}
+	if l.progress == nil {
+		l.progress = &progress{l: l, silent: true}
+	}
 }
 
 func newLogger(o *Options, stdout, stderr io.Writer) *logger {
+	if o.Msgs2Stderr {
+		stdout = stderr
+	}
 	l := &logger{stdout: stdout, stderr: stderr, opts: o, lv: outputLevels(o)}
 	switch {
 	case o.OutFormat != "":
@@ -102,6 +122,7 @@ func (l *logger) errorf(format string, args ...any) {
 	if !strings.HasSuffix(msg, "\n") {
 		msg += "\n"
 	}
+	l.events.message(EventError, msg)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.progress.clearLine()
@@ -110,6 +131,11 @@ func (l *logger) errorf(format string, args ...any) {
 
 // remote prints text received from the peer.
 func (l *logger) remote(isErr bool, text []byte) {
+	if isErr {
+		l.events.message(EventError, string(text))
+	} else {
+		l.events.message(EventMessage, string(text))
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.progress.clearLine()
@@ -121,11 +147,12 @@ func (l *logger) remote(isErr bool, text []byte) {
 }
 
 func (l *logger) deleted(name string, isDir bool) {
-	if l.format == "" && l.lv.info[infoDel] == 0 {
-		return
-	}
 	if isDir && !strings.HasSuffix(name, "/") {
 		name += "/"
+	}
+	l.events.emit(Event{Kind: EventDeleted, Name: name})
+	if l.format == "" && l.lv.info[infoDel] == 0 {
+		return
 	}
 	if l.hasI > 0 {
 		l.print(l.expand(&flist.File{Name: name}, itemDeleted, "del.", "") + "\n")
@@ -137,10 +164,11 @@ func (l *logger) deleted(name string, isDir bool) {
 // shouldLog decides whether a record that transferred nothing is shown
 // (rsync's maybe_log_item).
 func (l *logger) shouldLog(f *flist.File, iflags uint32, xname string) bool {
-	if l.format == "" {
-		return false
-	}
 	sig := iflags&significantItemFlags != 0
+	if l.format == "" {
+		// Only events: report what changed.
+		return l.events != nil && (sig || xname != "")
+	}
 	switch {
 	case l.hasI > 0 && (sig || xname != "" || l.hasI > 1 || l.lv.info[infoName] > 1):
 		return true
@@ -156,6 +184,16 @@ func (l *logger) shouldLog(f *flist.File, iflags uint32, xname string) bool {
 
 // item logs a file-list entry with its item flags.
 func (l *logger) item(f *flist.File, iflags uint32, xname string) {
+	if l.events != nil {
+		ev := Event{Kind: EventItem, Name: f.Name, Item: l.itemString(f, iflags), Size: f.Size, Link: f.Link}
+		if f.IsDir() {
+			ev.Name += "/"
+		}
+		if xname != "" && iflags&itemXnameFollows != 0 {
+			ev.Link = xname
+		}
+		l.events.emit(ev)
+	}
 	if l.format == "" {
 		return
 	}
@@ -418,8 +456,9 @@ func listLine(f *flist.File, human int) string {
 
 // progress renders --progress and --info=progress2 output.
 type progress struct {
-	l     *logger
-	total bool
+	l      *logger
+	total  bool
+	silent bool // tracked for events only
 
 	// whole-transfer state for progress2
 	xferred   int64
@@ -441,7 +480,7 @@ type progress struct {
 }
 
 func (p *progress) clearLine() {
-	if p != nil && p.onLine {
+	if p != nil && !p.silent && p.onLine {
 		io.WriteString(p.l.stdout, "\n")
 		p.onLine = false
 	}
@@ -496,6 +535,11 @@ func (p *progress) end() {
 }
 
 func (p *progress) render(final bool) {
+	p.l.events.emit(Event{Kind: EventProgress, Name: p.name, Size: p.size, Bytes: p.done})
+	if p.silent {
+		p.lastPrint = time.Now()
+		return
+	}
 	p.l.mu.Lock()
 	defer p.l.mu.Unlock()
 	now := time.Now()

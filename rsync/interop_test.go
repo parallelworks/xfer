@@ -641,6 +641,8 @@ var scenarios = []scenario{
 	{name: "prune-empty-dirs", opts: []string{"-a", "-m", "--delete", "--exclude=*.o"}, prepare: emptyDirs, check: checkPrune},
 	{name: "keep-dirlinks", opts: []string{"-a", "-K"}, prepare: dirLink, check: checkDirLink},
 	{name: "sparse", opts: []string{"-a", "-S"}, prepare: sparseFile, check: checkSparse},
+	{name: "preallocate", opts: []string{"-a", "--preallocate", "--no-W"}, prepare: staleDest, times: true, check: checkIgnoring("extra-file", "extra-dir", "extra-dir/sub", "extra-dir/sub/x")},
+	{name: "open-noatime", opts: []string{"-a", "--open-noatime", "-c"}, minProto: 32},
 	{name: "timeout", opts: []string{"-a", "--timeout=1", "--delete", "--no-W"}, prepare: staleDest, times: true},
 	{name: "copy-unsafe-links", opts: []string{"-a", "--copy-unsafe-links"}, prepare: unsafeLinks, check: checkUnsafeLinks},
 	{name: "no-inc-recursive", opts: []string{"-a", "--no-inc-recursive", "--delete", "--no-W"}, prepare: staleDest, times: true, perms: true},
@@ -732,7 +734,7 @@ func TestInterop(t *testing.T) {
 					if pr.client.name == "openrsync" || pr.server.name == "openrsync" {
 						if slices.ContainsFunc(sc.opts, func(o string) bool {
 							return strings.HasPrefix(o, "--compress-choice") || strings.HasPrefix(o, "--checksum-choice") ||
-								o == "-s" || o == "--inplace" || o == "--delete-after" || o == "--no-inc-recursive" || o == "--delay-updates" || o == "-b" || o == "-F" || strings.HasPrefix(o, "--files-from=:") || strings.HasPrefix(o, "--backup-dir") || o == "--copy-unsafe-links" || strings.HasPrefix(o, "--protocol")
+								o == "-s" || o == "--inplace" || o == "--delete-after" || o == "--no-inc-recursive" || o == "--delay-updates" || o == "-b" || o == "-F" || strings.HasPrefix(o, "--files-from=:") || strings.HasPrefix(o, "--backup-dir") || o == "--copy-unsafe-links" || strings.HasPrefix(o, "--protocol") || o == "--preallocate" || o == "--open-noatime"
 						}) {
 							t.Skip("not supported by openrsync")
 						}

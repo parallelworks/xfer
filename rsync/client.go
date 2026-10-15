@@ -32,6 +32,12 @@ type Client struct {
 
 	// Stdin is read for --files-from=-; nil means os.Stdin.
 	Stdin io.Reader
+
+	// Events, if set, receives the transfer's progress as structured
+	// events, whatever the output options. It is called from the
+	// transfer's goroutines, one call at a time, and should return
+	// quickly: the transfer waits for it.
+	Events func(Event)
 }
 
 // location is a parsed SRC or DEST operand.
@@ -125,6 +131,7 @@ func (c *Client) Run(ctx context.Context, o *Options, operands []string) (*Stats
 	}
 
 	log := newLogger(o, stdout, stderr)
+	log.setEvents(c.Events)
 	start := time.Now()
 
 	var conn transport.Conn
@@ -132,7 +139,7 @@ func (c *Client) Run(ctx context.Context, o *Options, operands []string) (*Stats
 	local := host == ""
 	if local {
 		var err error
-		conn, serverDone, err = startLocalServer(ctx, o, push, remotePaths, stderr)
+		conn, serverDone, err = startLocalServer(ctx, o, push, remotePaths, stderr, &localServer{reportDeletes: c.Events != nil})
 		if err != nil {
 			return nil, err
 		}
@@ -590,11 +597,19 @@ func serverArgs(o *Options, push bool) []string {
 		if o.SizeOnly {
 			args = append(args, "--size-only")
 		}
+		if o.Preallocate {
+			args = append(args, "--preallocate")
+		}
 		if o.Stats {
 			args = append(args, "--stats")
 		}
-	} else if o.SkipCompress != "" || o.set["skip-compress"] {
-		args = append(args, "--skip-compress="+o.SkipCompress)
+	} else {
+		if o.SkipCompress != "" || o.set["skip-compress"] {
+			args = append(args, "--skip-compress="+o.SkipCompress)
+		}
+		if o.OpenNoatime {
+			args = append(args, "--open-noatime")
+		}
 	}
 	if push && o.ModifyWindow != 0 {
 		if o.ModifyWindow < 0 {

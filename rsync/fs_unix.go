@@ -6,6 +6,7 @@
 package rsync
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path"
@@ -189,4 +190,18 @@ func checkInRoot(root *dtree, name string) error {
 // are single path components.
 func renameat(dirfd int, old, new string) error {
 	return unix.Renameat(dirfd, old, dirfd, new)
+}
+
+// openSource opens a file to read its contents, with noatime (where the
+// system has O_NOATIME) without updating its access time. The system only
+// allows that to a file's owner, so for other files it falls back to a
+// plain open, as rsync does.
+func openSource(name string, noatime bool) (*os.File, error) {
+	if noatime && oNoatime != 0 {
+		f, err := openatFast(unix.AT_FDCWD, name, os.O_RDONLY|oNoatime, 0)
+		if !errors.Is(err, unix.EPERM) {
+			return f, err
+		}
+	}
+	return openFast(name)
 }

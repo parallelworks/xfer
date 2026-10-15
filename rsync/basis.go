@@ -91,7 +91,7 @@ func (rv *receiving) unchangedAt(f *flist.File, p string, fi fs.FileInfo) bool {
 	}
 	switch {
 	case o.Checksum:
-		sum, err := fileChecksum(p, rv.s.fileSum)
+		sum, err := fileChecksum(p, rv.s.fileSum, rv.o.OpenNoatime)
 		return err == nil && bytes.Equal(sum, f.Checksum)
 	case o.SizeOnly:
 		return true

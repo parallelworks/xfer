@@ -31,3 +31,10 @@ func futimes(f *os.File, mtime time.Time) error {
 	}
 	return nil
 }
+
+const oNoatime = unix.O_NOATIME
+
+// preallocate reserves size bytes for f without changing its length.
+func preallocate(f *os.File, size int64) error {
+	return unix.Fallocate(int(f.Fd()), unix.FALLOC_FL_KEEP_SIZE, 0, size)
+}

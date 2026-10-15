@@ -40,6 +40,7 @@ func (rv *receiving) generateInc() error {
 			w.W.Ndx(wire.NdxDone)
 			if eachDone {
 				w.W.Flush()
+				rv.pending.Store(false)
 			}
 			w.Unlock()
 			if l.parent >= 0 {
@@ -104,7 +105,7 @@ func (rv *receiving) generateInc() error {
 			return nil
 		default:
 		}
-		if err := w.Flush(); err != nil {
+		if err := rv.flush(); err != nil {
 			return err
 		}
 		select {
@@ -179,7 +180,7 @@ func (rv *receiving) generateInc() error {
 		// rsync's sender sends the lists after the first only once it
 		// starts sending files, so its generator waits, flushing, here.
 		if n == 0 {
-			if err := w.Flush(); err != nil {
+			if err := rv.flush(); err != nil {
 				return err
 			}
 		}

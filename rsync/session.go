@@ -98,6 +98,8 @@ type session struct {
 
 	// localTransfer is set when both ends run in this process.
 	localTransfer bool
+	reportDeletes bool // a local server reports deletions for the client's events
+	ids           idNames
 
 	// inc is set with incremental recursion. lists holds the file lists
 	// in use; enc and dec carry the file-list coding state, which spans
@@ -473,6 +475,7 @@ func (s *session) info(line string) {
 		}
 		return
 	}
+	s.log.events.message(EventMessage, line)
 	s.log.print(line)
 }
 

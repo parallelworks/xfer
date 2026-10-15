@@ -114,7 +114,7 @@ var optionTable = []option{
 		return nil
 	}},
 	ignored("motd", 0, argNone),
-	ignored("msgs2stderr", 0, argNone),
+	boolOpt("msgs2stderr", 0, func(o *Options) *bool { return &o.Msgs2Stderr }),
 	boolOpt("stats", 0, func(o *Options) *bool { return &o.Stats }),
 	{long: []string{"human-readable"}, short: 'h',
 		set: func(o *Options, _ string) error { o.HumanReadable++; return nil }, unset: func(o *Options) { o.HumanReadable = 0 }},
@@ -131,7 +131,7 @@ var optionTable = []option{
 	unsupported("xattrs", 'X', argNone),
 	boolOpt("times", 't', func(o *Options) *bool { return &o.Times }),
 	unsupported("atimes", 'U', argNone),
-	ignored("open-noatime", 0, argNone),
+	boolOpt("open-noatime", 0, func(o *Options) *bool { return &o.OpenNoatime }),
 	unsupported("crtimes", 'N', argNone),
 	boolOpt("omit-dir-times", 'O', func(o *Options) *bool { return &o.OmitDirTimes }),
 	boolOpt("omit-link-times", 'J', func(o *Options) *bool { return &o.OmitLinkTimes }),
@@ -195,7 +195,7 @@ var optionTable = []option{
 	}},
 	ignored("max-alloc", 0, argString),
 	boolOpt("sparse", 'S', func(o *Options) *bool { return &o.Sparse }),
-	ignored("preallocate", 0, argNone),
+	boolOpt("preallocate", 0, func(o *Options) *bool { return &o.Preallocate }),
 	boolOpt("inplace", 0, func(o *Options) *bool { return &o.Inplace }),
 	unsupported("append", 0, argNone),
 	unsupported("append-verify", 0, argNone),
@@ -356,7 +356,7 @@ var optionTable = []option{
 	unsupported("only-write-batch", 0, argString),
 	strOpt("files-from", 0, func(o *Options) *string { return &o.FilesFrom }),
 	boolOpt("from0", '0', func(o *Options) *bool { return &o.From0 }),
-	ignored("old-args", 0, argNone),
+	unsupported("old-args", 0, argNone),
 	{long: []string{"secluded-args", "protect-args"}, short: 's',
 		set:   func(o *Options, _ string) error { o.ProtectArgs = true; return nil },
 		unset: func(o *Options) { o.ProtectArgs = false }},
@@ -465,9 +465,15 @@ func init() {
 //
 // It accepts the same syntax as rsync: bundled short options (-avz),
 // "--name=value" and "--name value", "-Bvalue" and "-B value", "--no-NAME"
-// negations, and "--" to end options.
+// negations, and "--" to end options. A "-" file name for --exclude-from
+// and the like reads standard input.
 func ParseArgs(args []string) (*Options, []string, error) {
-	o := &Options{ImpliedDirs: true, set: map[string]bool{}}
+	return parseArgs(args, os.Stdin)
+}
+
+// parseArgs is ParseArgs reading "-" files from stdin.
+func parseArgs(args []string, stdin io.Reader) (*Options, []string, error) {
+	o := &Options{ImpliedDirs: true, set: map[string]bool{}, stdin: stdin}
 	var operands []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -597,7 +603,7 @@ func (o *Options) addRulesFrom(path, prefix string) error {
 	var data []byte
 	var err error
 	if path == "-" {
-		data, err = readAllStdin()
+		data, err = io.ReadAll(o.stdin)
 	} else {
 		data, err = os.ReadFile(path)
 	}
@@ -613,8 +619,6 @@ func (o *Options) addRulesFrom(path, prefix string) error {
 	}
 	return nil
 }
-
-var readAllStdin = func() ([]byte, error) { return io.ReadAll(os.Stdin) }
 
 // ParseSize parses a size such as "100", "1.5K", "10MB", "2GiB" or "1G-1"
 // the way rsync does: K/M/G/T/P suffixes are powers of 1024, unless followed

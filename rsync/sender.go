@@ -305,7 +305,7 @@ func (s *session) readSums(h sumHead) (*delta.Sums, error) {
 // sendFile transmits one file as a delta against the receiver's sums.
 func (s *session) sendFile(f *flist.File, req request, head sumHead, sums *delta.Sums,
 	block *checksum.Block, fileHash hash.Hash, tw token.Writer) error {
-	file, err := openFast(f.Source)
+	file, err := openSource(f.Source, s.opts.OpenNoatime)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			s.ioErr.Or(ioErrVanished)
@@ -327,7 +327,7 @@ func (s *session) sendFile(f *flist.File, req request, head sumHead, sums *delta
 	s.writeSumHead(head)
 
 	if !s.server {
-		if s.log.format != "" && !s.logAfter() {
+		if s.log.logs() && !s.logAfter() {
 			s.log.item(f, req.iflags, req.xname)
 		}
 		rem, total, more := s.lists.toCheck(req.ndx)
@@ -372,7 +372,7 @@ func (s *session) sendFile(f *flist.File, req request, head sumHead, sums *delta
 	s.stats.TotalTransferredSize += f.Size
 	if !s.server {
 		s.log.progress.end()
-		if s.log.format != "" && s.logAfter() {
+		if s.log.logs() && s.logAfter() {
 			s.log.item(f, req.iflags, req.xname)
 		}
 	}
@@ -395,7 +395,8 @@ func (s *session) sendWarningVanished(f *flist.File) {
 // logAfter reports whether transfer lines are printed after the data moved,
 // which is when the format includes transfer statistics.
 func (s *session) logAfter() bool {
-	return containsAny(s.log.format, "%b", "%c", "%C")
+	// Events report a file once it is done.
+	return s.log.format == "" || containsAny(s.log.format, "%b", "%c", "%C")
 }
 
 // sendEmitter turns the delta into tokens, keeping the file checksum and

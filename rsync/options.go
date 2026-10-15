@@ -3,7 +3,10 @@
 
 package rsync
 
-import "time"
+import (
+	"io"
+	"time"
+)
 
 // Options configures a transfer. The zero value copies nothing but the
 // named files; [ParseArgs] fills Options from an rsync command line.
@@ -78,15 +81,24 @@ type Options struct {
 	CVSExclude bool     // -C
 
 	// How to write files.
-	WholeFile    *bool // -W / --no-W; nil lets the transfer decide
-	Inplace      bool
-	Partial      bool
-	PartialDir   string
-	TempDir      string // -T
-	Sparse       bool   // -S
+	WholeFile  *bool // -W / --no-W; nil lets the transfer decide
+	Inplace    bool
+	Partial    bool
+	PartialDir string
+	TempDir    string // -T
+	Sparse     bool   // -S
+	// Preallocate reserves each file's space before writing it, where the
+	// system supports it (Linux); elsewhere it has no effect.
+	Preallocate  bool
 	DelayUpdates bool
-	Fsync        bool
-	BlockSize    int // -B; 0 picks per file
+	// OpenNoatime opens files for reading without updating their access
+	// times, where the system supports it (Linux).
+	OpenNoatime bool
+	// Msgs2Stderr sends the messages normally written to standard output
+	// to standard error instead.
+	Msgs2Stderr bool
+	Fsync       bool
+	BlockSize   int // -B; 0 picks per file
 
 	// BasisDirs are directories holding older copies of the destination
 	// (--compare-dest, --copy-dest, --link-dest), searched in order for a
@@ -142,7 +154,8 @@ type Options struct {
 	// after -v; see the --info=help output.
 	Info, Debug []string
 
-	set map[string]bool
+	set   map[string]bool
+	stdin io.Reader // read for "-" rule files
 }
 
 // DeleteMode says whether and when the receiver deletes extraneous files.
