@@ -205,22 +205,25 @@ median of 5 runs. The data lives on tmpfs, on an 8-CPU Linux pod:
 
 | row | dir | GNU s | xfer s | xfer/GNU | GNU RSS MB | xfer RSS MB |
 |---|---|---:|---:|---:|---:|---:|
-| initial: 20k files + 4×256 MB | push | 0.83 | 0.75 | 0.90 | 2.4 | 8.7 |
-| | pull | 0.82 | 0.73 | 0.89 | 2.3 | 8.7 |
-| no-op resync | push | 0.11 | 0.05 | 0.46 | 2.2 | 8.4 |
-| | pull | 0.09 | 0.05 | 0.64 | 2.1 | 7.9 |
-| delta: 1 MB changed per big file | push | 0.72 | 0.45 | 0.62 | 3.1 | 10.5 |
-| | pull | 0.71 | 0.45 | 0.63 | 3.1 | 10.5 |
-| `-c` | push | 0.51 | 0.36 | 0.71 | 2.2 | 10.8 |
-| | pull | 0.49 | 0.36 | 0.74 | 2.2 | 10.9 |
-| `-z` (zstd), compressible text | push | 1.25 | 1.05 | 0.84 | 5.7 | 28.1 |
-| | pull | 1.23 | 1.08 | 0.88 | 5.8 | 28.2 |
-| `--delete`, 5k removed | push | 0.15 | 0.09 | 0.62 | 2.2 | 8.0 |
-| | pull | 0.13 | 0.10 | 0.80 | 2.2 | 7.9 |
-| 200k files, initial copy | push | 4.32 | 3.72 | 0.86 | 2.3 | 9.0 |
-| | pull | 4.29 | 3.75 | 0.87 | 2.4 | 8.9 |
-| 200k files, no-op | push | 0.70 | 0.45 | 0.64 | 2.3 | 8.8 |
-| | pull | 0.68 | 0.45 | 0.67 | 2.3 | 9.0 |
+| initial: 20k files + 4×256 MB | push | 0.86 | 0.73 | 0.85 | 2.3 | 8.3 |
+| | pull | 0.82 | 0.75 | 0.92 | 2.4 | 8.1 |
+| no-op resync | push | 0.11 | 0.05 | 0.46 | 2.2 | 8.2 |
+| | pull | 0.09 | 0.06 | 0.63 | 2.1 | 7.7 |
+| delta: 1 MB changed per big file | push | 0.74 | 0.48 | 0.65 | 3.2 | 9.7 |
+| | pull | 0.71 | 0.47 | 0.65 | 3.1 | 9.6 |
+| `-c` | push | 0.50 | 0.38 | 0.75 | 2.2 | 10.9 |
+| | pull | 0.49 | 0.37 | 0.75 | 2.2 | 10.4 |
+| `-z` (zstd), compressible text | push | 1.34 | 1.24 | 0.93 | 5.7 | 14.5 |
+| | pull | 1.32 | 1.25 | 0.94 | 5.7 | 14.5 |
+| `--delete`, 5k removed | push | 0.16 | 0.11 | 0.69 | 2.2 | 8.0 |
+| | pull | 0.14 | 0.11 | 0.78 | 2.1 | 7.7 |
+| 200k files, initial copy | push | 4.52 | 3.97 | 0.88 | 2.4 | 8.7 |
+| | pull | 4.38 | 4.03 | 0.92 | 2.3 | 8.7 |
+| 200k files, no-op | push | 0.71 | 0.46 | 0.65 | 2.2 | 8.8 |
+| | pull | 0.69 | 0.45 | 0.66 | 2.3 | 8.6 |
+
+The harness gates each run: xfer's median must be at most GNU's on every
+row, and its peak RSS on the 200k-file tree at most 12 MB.
 
 RSS is the peak resident memory of the largest single process (client or
 server), sampled from `/proc/PID/smaps_rollup` every 2 ms in one extra run
@@ -229,14 +232,17 @@ are kept in per-CPU batches, 1.5 MB each on the 192-CPU host the pod runs
 on, so they cannot resolve the difference.
 
 GNU rsync, a C program, peaks at about 2.3 MB on these rows, and xfer at
-8 to 11 MB (28 MB with zstd, whose encoder keeps an 8 MB window). Memory
-does not grow with the tree: 200k files take what 20k do, thanks to
-incremental recursion. Most of xfer's footprint is the Go runtime's fixed
-cost. About 3.4 MB of the binary's code and tables are resident at peak,
-because the kernel maps 64 KB around every page fault and Go's collector
-reads function tables from all over the binary. The heap peaks at about
-3 MB, of which 1 to 1.5 MB is live (xfer runs the collector at GOGC=25 for
-that reason), and goroutine stacks and runtime metadata add 1.5 MB.
+8 to 11 MB (14.5 MB with zstd). Memory does not grow with the tree: 200k
+files take what 20k do, thanks to incremental recursion. Most of xfer's
+footprint is fixed cost:
+
+- About 3.5 MB is the binary's code and tables. Package initialization
+  touches nearly every 64 KB stretch of the binary, and the kernel maps
+  64 KB around each page fault, so resident code tracks binary size (GNU
+  rsync's is about 1.7 MB, shared libraries included).
+- The heap peaks at about 3 MB, of which 1 to 1.5 MB is live; the command
+  runs the collector at GOGC=25 to keep the rest small.
+- Thread stacks and runtime metadata add about 1.5 MB.
 
 With `--ssh HOST` the harness adds a row over real OpenSSH between two
 machines. That row measures the network as much as rsync, and is
@@ -244,8 +250,8 @@ reported but not gated. Between two pods on different nodes:
 
 | row | dir | GNU s | xfer s | xfer/GNU | GNU RSS MB | xfer RSS MB |
 |---|---|---:|---:|---:|---:|---:|
-| initial copy over OpenSSH | push | 1.97 | 1.66 | 0.84 | 2.3 | 8.3 |
-| | pull | 1.72 | 1.65 | 0.96 | 2.1 | 8.5 |
+| initial copy over OpenSSH | push | 1.98 | 1.66 | 0.84 | 2.3 | 8.0 |
+| | pull | 1.74 | 1.66 | 0.96 | 2.2 | 8.0 |
 
 The RSS figures for this row cover only the local process.
 
