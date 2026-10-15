@@ -1,0 +1,49 @@
+# Release builds: static xfer binaries for Linux and macOS.
+# Check with: go run github.com/goreleaser/goreleaser/v2@latest check
+version: 2
+
+project_name: xfer
+
+before:
+  hooks:
+    - go mod verify
+
+builds:
+  - id: xfer
+    main: ./cmd/xfer
+    binary: xfer
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/parallelworks/xfer/rsync.Version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: xfer
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README*
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-dev+{{ .ShortCommit }}"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^Merge "
+
+release:
+  github:
+    owner: parallelworks
+    name: xfer

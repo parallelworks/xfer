@@ -584,7 +584,8 @@ func codeText(code int) string {
 	return "unexplained error"
 }
 
-// Version is the version of this implementation.
+// Version is the version of this implementation. Release builds set it
+// with -ldflags "-X github.com/parallelworks/xfer/rsync.Version=...".
 var Version = "0.1.0-dev"
 
 const usage = `xfer rsync: a fast, versatile, remote (and local) file-copying tool,
